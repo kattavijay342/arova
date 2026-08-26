@@ -1,0 +1,188 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --color-bg: #f6f8fa;
+  --color-surface: #ffffff;
+  --color-surface-raised: #ffffff;
+  --color-border: #dfe4ea;
+  --color-border-soft: #e9ecf1;
+  --color-text: #1a2230;
+  --color-text-muted: #5c6674;
+  --color-text-faint: #8892a0;
+
+  --color-brand: #3d4fa8;
+  --color-brand-soft: #eceffb;
+
+  --color-student: #2f6fed;
+  --color-student-soft: #e9f0fe;
+  --color-career: #a6690a;
+  --color-career-soft: #fbf0dd;
+  --color-general: #1a8a6e;
+  --color-general-soft: #e5f5f0;
+
+  --color-danger: #c23a3a;
+  --color-danger-soft: #fbeaea;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --color-bg: #10151d;
+    --color-surface: #161d27;
+    --color-surface-raised: #1b2330;
+    --color-border: #2a3441;
+    --color-border-soft: #232c38;
+    --color-text: #e7ebf1;
+    --color-text-muted: #a9b3c1;
+    --color-text-faint: #8a95a5;
+
+    --color-brand: #8ea1ff;
+    --color-brand-soft: #1c2340;
+
+    --color-student: #6f9dff;
+    --color-student-soft: #18243f;
+    --color-career: #e0a94a;
+    --color-career-soft: #2c2413;
+    --color-general: #4fd3ae;
+    --color-general-soft: #132a24;
+
+    --color-danger: #e26a6a;
+    --color-danger-soft: #2c1616;
+  }
+}
+
+:root[data-theme="dark"] {
+  --color-bg: #10151d;
+  --color-surface: #161d27;
+  --color-surface-raised: #1b2330;
+  --color-border: #2a3441;
+  --color-border-soft: #232c38;
+  --color-text: #e7ebf1;
+  --color-text-muted: #9aa5b3;
+  --color-text-faint: #707c8c;
+
+  --color-brand: #8ea1ff;
+  --color-brand-soft: #1c2340;
+
+  --color-student: #6f9dff;
+  --color-student-soft: #18243f;
+  --color-career: #e0a94a;
+  --color-career-soft: #2c2413;
+  --color-general: #4fd3ae;
+  --color-general-soft: #132a24;
+
+  --color-danger: #e26a6a;
+  --color-danger-soft: #2c1616;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+
+::selection {
+  background: var(--color-brand-soft);
+  color: var(--color-brand);
+}
+
+/* markdown content inside assistant messages */
+.md-content :where(p) {
+  margin: 0 0 0.6em;
+}
+.md-content :where(p:last-child) {
+  margin-bottom: 0;
+}
+.md-content :where(ul, ol) {
+  margin: 0.3em 0 0.6em;
+  padding-left: 1.3em;
+}
+.md-content :where(li) {
+  margin-bottom: 0.25em;
+}
+.md-content :where(strong) {
+  font-weight: 700;
+}
+.md-content :where(code) {
+  background: var(--color-border-soft);
+  border-radius: 4px;
+  padding: 0.1em 0.4em;
+  font-size: 0.88em;
+}
+.md-content :where(pre) {
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 0.8em 1em;
+  overflow-x: auto;
+  margin: 0.6em 0;
+}
+.md-content :where(pre code) {
+  background: none;
+  padding: 0;
+}
+.md-content :where(table) {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.6em 0;
+  font-size: 0.92em;
+}
+.md-content :where(th, td) {
+  border: 1px solid var(--color-border);
+  padding: 0.4em 0.6em;
+  text-align: left;
+}
+.md-content :where(h1, h2, h3, h4) {
+  font-weight: 700;
+  margin: 0.8em 0 0.4em;
+}
+.md-content :where(h1) {
+  font-size: 1.5em;
+}
+.md-content :where(h2) {
+  font-size: 1.3em;
+}
+.md-content :where(h3) {
+  font-size: 1.15em;
+}
+.md-content :where(h4) {
+  font-size: 1.05em;
+}
+.md-content :where(a) {
+  color: var(--color-brand);
+  text-decoration: underline;
+}
+.md-content :where(blockquote) {
+  margin: 0.7em 0;
+  padding: 0.7em 1em;
+  border-left: 3px solid var(--color-brand);
+  background: var(--color-brand-soft);
+  border-radius: 0 8px 8px 0;
+}
+.md-content :where(blockquote p) {
+  margin: 0 0 0.4em;
+}
+.md-content :where(blockquote ul) {
+  margin: 0.2em 0 0;
+}
+.md-content :where(blockquote h4) {
+  margin: 0 0 0.4em;
+  font-size: 0.95em;
+  color: var(--color-brand);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
