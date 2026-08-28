@@ -12,6 +12,7 @@ import { FullPageLoader } from "@/components/ui/Spinner";
 import { Button } from "@/components/ui/Button";
 import { MODES } from "@/lib/modes";
 import { getInterviewState } from "@/lib/interview";
+import type { ImageAttachment } from "@/lib/types";
 
 export default function ChatConversationPage() {
   const { conversationId } = useParams<{ conversationId: string }>();
@@ -38,10 +39,10 @@ export default function ChatConversationPage() {
     );
   }
 
-  function handleSend(text: string) {
-    if (!text.trim() || status === "loading") return;
+  function handleSend(text: string, attachment?: ImageAttachment | null) {
+    if ((!text.trim() && !attachment) || status === "loading") return;
     setDraft("");
-    void sendMessage(conversationId, text);
+    void sendMessage(conversationId, text, attachment);
   }
 
   const interviewState = conversation.mode === "career" ? getInterviewState(conversation.messages) : null;

@@ -1,7 +1,7 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { getGeminiEnv } from "./aiEnv";
 import { SYSTEM_INSTRUCTIONS } from "./systemInstructions";
-import type { Mode } from "@/lib/types";
+import type { ImageAttachment, Mode } from "@/lib/types";
 
 interface HistoryMessage {
   role: "user" | "assistant";
@@ -14,11 +14,17 @@ interface HistoryMessage {
  * (config error) or if the request/stream fails (network/quota/model
  * error) — callers should catch and turn these into a clean API response
  * rather than letting them surface as a raw stack trace.
+ *
+ * `attachment`, when present, is sent as an inline image part alongside the
+ * current turn's text (Gemini multimodal input). It's never added to
+ * `history` — attachments aren't persisted, so a past turn's image can't be
+ * reconstructed on later requests.
  */
 export async function* streamGeminiReply(
   mode: Mode,
   userMessage: string,
-  history: HistoryMessage[] = []
+  history: HistoryMessage[] = [],
+  attachment?: ImageAttachment
 ): AsyncGenerator<string, void, unknown> {
   const { apiKey, model: modelName } = getGeminiEnv();
 
@@ -28,12 +34,19 @@ export async function* streamGeminiReply(
     systemInstruction: SYSTEM_INSTRUCTIONS[mode],
   });
 
+  const currentParts = attachment
+    ? [
+        ...(userMessage ? [{ text: userMessage }] : []),
+        { inlineData: { mimeType: attachment.mimeType, data: attachment.data } },
+      ]
+    : [{ text: userMessage }];
+
   const contents = [
     ...history.map((m) => ({
       role: m.role === "assistant" ? ("model" as const) : ("user" as const),
       parts: [{ text: m.content }],
     })),
-    { role: "user" as const, parts: [{ text: userMessage }] },
+    { role: "user" as const, parts: currentParts },
   ];
 
   let sawText = false;

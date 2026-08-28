@@ -10,7 +10,7 @@ import {
   useRef,
   type ReactNode,
 } from "react";
-import type { ChatStatus, Conversation, FeedbackRating, Message, Mode } from "../types";
+import type { ChatStatus, Conversation, FeedbackRating, ImageAttachment, Message, Mode } from "../types";
 import { generateId, truncate } from "../utils";
 import { useAuth } from "./AuthContext";
 
@@ -18,7 +18,7 @@ interface ChatState {
   conversations: Conversation[];
   status: ChatStatus;
   error: string | null;
-  lastFailedMessage: { conversationId: string; text: string } | null;
+  lastFailedMessage: { conversationId: string; text: string; attachment?: ImageAttachment | null } | null;
   hydrated: boolean;
 }
 
@@ -33,7 +33,10 @@ type Action =
   | { type: "CLEAR_ALL" }
   | { type: "RENAME_CONVERSATION"; id: string; title: string }
   | { type: "SET_STATUS"; status: ChatStatus; error?: string | null }
-  | { type: "SET_LAST_FAILED"; value: { conversationId: string; text: string } | null }
+  | {
+      type: "SET_LAST_FAILED";
+      value: { conversationId: string; text: string; attachment?: ImageAttachment | null } | null;
+    }
   | { type: "SET_MESSAGE_FEEDBACK"; conversationId: string; messageId: string; feedback: FeedbackRating | null };
 
 function reducer(state: ChatState, action: Action): ChatState {
@@ -133,7 +136,7 @@ interface ChatContextValue {
   hydrated: boolean;
   getConversation: (id: string) => Conversation | undefined;
   createConversation: (mode: Mode) => Promise<string>;
-  sendMessage: (conversationId: string, text: string) => Promise<void>;
+  sendMessage: (conversationId: string, text: string, attachment?: ImageAttachment | null) => Promise<void>;
   retryLastMessage: () => Promise<void>;
   deleteConversation: (id: string) => void;
   renameConversation: (id: string, title: string) => void;
@@ -273,90 +276,93 @@ export function ChatProvider({ children }: { children: ReactNode }) {
    * matching the old behavior where a failed send never left a partial
    * assistant bubble behind.
    */
-  const postAndHandleReply = useCallback(async (conversationId: string, text: string) => {
-    dispatch({ type: "SET_STATUS", status: "loading" });
+  const postAndHandleReply = useCallback(
+    async (conversationId: string, text: string, attachment?: ImageAttachment | null) => {
+      dispatch({ type: "SET_STATUS", status: "loading" });
 
-    const streamMessageId = generateId();
-    let started = false;
-    let accumulated = "";
+      const streamMessageId = generateId();
+      let started = false;
+      let accumulated = "";
 
-    try {
-      const res = await fetch(`/api/conversations/${conversationId}/messages`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: text }),
-      });
+      try {
+        const res = await fetch(`/api/conversations/${conversationId}/messages`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(attachment ? { content: text, attachment } : { content: text }),
+        });
 
-      if (!res.ok || !res.body) {
-        const json = await res.json().catch(() => null);
-        throw new Error(json?.error?.message ?? `Request failed (${res.status})`);
-      }
+        if (!res.ok || !res.body) {
+          const json = await res.json().catch(() => null);
+          throw new Error(json?.error?.message ?? `Request failed (${res.status})`);
+        }
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
 
-        let newlineIndex = buffer.indexOf("\n");
-        while (newlineIndex !== -1) {
-          const line = buffer.slice(0, newlineIndex).trim();
-          buffer = buffer.slice(newlineIndex + 1);
-          newlineIndex = buffer.indexOf("\n");
-          if (!line) continue;
+          let newlineIndex = buffer.indexOf("\n");
+          while (newlineIndex !== -1) {
+            const line = buffer.slice(0, newlineIndex).trim();
+            buffer = buffer.slice(newlineIndex + 1);
+            newlineIndex = buffer.indexOf("\n");
+            if (!line) continue;
 
-          const event = JSON.parse(line) as
-            | { type: "chunk"; delta: string }
-            | { type: "done"; assistantMessage: RawMessage }
-            | { type: "error"; code: string; message: string };
+            const event = JSON.parse(line) as
+              | { type: "chunk"; delta: string }
+              | { type: "done"; assistantMessage: RawMessage }
+              | { type: "error"; code: string; message: string };
 
-          if (event.type === "chunk") {
-            accumulated += event.delta;
-            if (!started) {
-              started = true;
+            if (event.type === "chunk") {
+              accumulated += event.delta;
+              if (!started) {
+                started = true;
+                dispatch({
+                  type: "ADD_MESSAGE",
+                  conversationId,
+                  message: {
+                    id: streamMessageId,
+                    role: "assistant",
+                    content: accumulated,
+                    createdAt: new Date().toISOString(),
+                  },
+                });
+                dispatch({ type: "SET_STATUS", status: "idle" });
+              } else {
+                dispatch({ type: "UPDATE_MESSAGE_CONTENT", conversationId, messageId: streamMessageId, content: accumulated });
+              }
+            } else if (event.type === "done") {
               dispatch({
-                type: "ADD_MESSAGE",
+                type: "REPLACE_MESSAGE",
                 conversationId,
-                message: {
-                  id: streamMessageId,
-                  role: "assistant",
-                  content: accumulated,
-                  createdAt: new Date().toISOString(),
-                },
+                messageId: streamMessageId,
+                message: mapMessage(event.assistantMessage),
               });
-              dispatch({ type: "SET_STATUS", status: "idle" });
             } else {
-              dispatch({ type: "UPDATE_MESSAGE_CONTENT", conversationId, messageId: streamMessageId, content: accumulated });
+              throw new Error(event.message);
             }
-          } else if (event.type === "done") {
-            dispatch({
-              type: "REPLACE_MESSAGE",
-              conversationId,
-              messageId: streamMessageId,
-              message: mapMessage(event.assistantMessage),
-            });
-          } else {
-            throw new Error(event.message);
           }
         }
-      }
 
-      dispatch({ type: "SET_LAST_FAILED", value: null });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Something went wrong.";
-      if (started) dispatch({ type: "REMOVE_MESSAGE", conversationId, messageId: streamMessageId });
-      dispatch({ type: "SET_STATUS", status: "error", error: message });
-      dispatch({ type: "SET_LAST_FAILED", value: { conversationId, text } });
-    }
-  }, []);
+        dispatch({ type: "SET_LAST_FAILED", value: null });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Something went wrong.";
+        if (started) dispatch({ type: "REMOVE_MESSAGE", conversationId, messageId: streamMessageId });
+        dispatch({ type: "SET_STATUS", status: "error", error: message });
+        dispatch({ type: "SET_LAST_FAILED", value: { conversationId, text, attachment } });
+      }
+    },
+    []
+  );
 
   const sendMessage = useCallback(
-    async (conversationId: string, text: string) => {
+    async (conversationId: string, text: string, attachment?: ImageAttachment | null) => {
       const trimmed = text.trim();
-      if (!trimmed) return;
+      if (!trimmed && !attachment) return;
       const convo = state.conversations.find((c) => c.id === conversationId);
       if (!convo) return;
 
@@ -364,23 +370,29 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       dispatch({
         type: "ADD_MESSAGE",
         conversationId,
-        message: { id: generateId(), role: "user", content: trimmed, createdAt: new Date().toISOString() },
-        retitle: isFirstMessage ? truncate(trimmed, 38) : undefined,
+        message: {
+          id: generateId(),
+          role: "user",
+          content: trimmed,
+          createdAt: new Date().toISOString(),
+          imageDataUrl: attachment ? `data:${attachment.mimeType};base64,${attachment.data}` : undefined,
+        },
+        retitle: isFirstMessage ? truncate(trimmed, 38) || "Image" : undefined,
       });
 
-      await postAndHandleReply(conversationId, trimmed);
+      await postAndHandleReply(conversationId, trimmed, attachment);
     },
     [state.conversations, postAndHandleReply]
   );
 
   const retryLastMessage = useCallback(async () => {
     if (!state.lastFailedMessage) return;
-    const { conversationId, text } = state.lastFailedMessage;
+    const { conversationId, text, attachment } = state.lastFailedMessage;
     // The failed user message is already visible (added optimistically by
     // sendMessage) — don't add it again, just re-attempt the AI reply. The
     // API route recognizes this as a retry (same trailing unanswered user
     // message) and won't insert a duplicate row.
-    await postAndHandleReply(conversationId, text);
+    await postAndHandleReply(conversationId, text, attachment);
   }, [state.lastFailedMessage, postAndHandleReply]);
 
   const deleteConversation = useCallback((id: string) => {

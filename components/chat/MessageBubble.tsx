@@ -76,14 +76,22 @@ function MessageBubbleImpl({
         ) : (
           <div
             className={cn(
-              "rounded-2xl px-4 py-3",
+              "flex flex-col gap-2 rounded-2xl px-4 py-3",
               isUser
                 ? "rounded-tr-sm bg-brand text-white"
                 : "rounded-tl-sm border-2 bg-surface-raised text-text"
             )}
             style={!isUser ? { borderColor: modeConfig.colorSoft } : undefined}
           >
-            <MessageContent content={message.content} />
+            {isUser && message.imageDataUrl && (
+              // eslint-disable-next-line @next/next/no-img-element -- ephemeral, client-only preview of an unpersisted attachment; not worth next/image here
+              <img
+                src={message.imageDataUrl}
+                alt="Attached"
+                className="max-h-64 w-full rounded-lg object-contain"
+              />
+            )}
+            {message.content && <MessageContent content={message.content} />}
           </div>
         )}
         <div className={cn("flex items-center gap-2.5 px-1 text-[13px] text-faint", isUser && "flex-row-reverse")}>

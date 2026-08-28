@@ -6,9 +6,27 @@ import { checkRateLimit } from "@/lib/server/rateLimit";
 import { isValidUuid } from "@/lib/server/validation";
 import type { Mode } from "@/lib/types";
 
-const sendMessageSchema = z.object({
-  content: z.string().trim().min(1, "Message cannot be empty").max(4000, "Message is too long"),
+// Kept in sync with the client-side allow-list in components/chat/MessageInput.tsx.
+const ALLOWED_IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/webp", "image/heic", "image/heif"] as const;
+const MAX_IMAGE_DECODED_BYTES = 4 * 1024 * 1024; // 4MB
+// Base64 inflates size by ~4/3; cap the raw string well above the decoded
+// limit so a malformed/oversized payload is rejected before decoding it.
+const MAX_IMAGE_BASE64_CHARS = Math.ceil((MAX_IMAGE_DECODED_BYTES * 4) / 3) + 1024;
+
+const attachmentSchema = z.object({
+  mimeType: z.enum(ALLOWED_IMAGE_MIME_TYPES),
+  data: z.string().min(1, "Attachment data is missing").max(MAX_IMAGE_BASE64_CHARS, "Image is too large"),
 });
+
+const sendMessageSchema = z
+  .object({
+    content: z.string().trim().max(4000, "Message is too long"),
+    attachment: attachmentSchema.optional(),
+  })
+  .refine((v) => v.content.length > 0 || v.attachment !== undefined, {
+    message: "Message cannot be empty",
+    path: ["content"],
+  });
 
 function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text;
@@ -48,7 +66,17 @@ export async function POST(request: Request, { params }: { params: { id: string 
   if (!parsed.success) {
     return fail(400, "BAD_REQUEST", "Validation failed", parsed.error.issues);
   }
-  const { content } = parsed.data;
+  const { content, attachment } = parsed.data;
+
+  // Zod only checked the base64 string's length; verify the actual decoded
+  // byte size server-side, since base64 padding/whitespace can skew that
+  // estimate — never trust the client's reported size.
+  if (attachment) {
+    const decodedBytes = Buffer.from(attachment.data, "base64").length;
+    if (decodedBytes > MAX_IMAGE_DECODED_BYTES) {
+      return fail(400, "BAD_REQUEST", "Image is too large. Maximum size is 4MB.");
+    }
+  }
 
   // Fail fast on a missing Gemini API key, before touching the database.
   try {
@@ -104,7 +132,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
 
       let full = "";
       try {
-        for await (const delta of streamAIReply(conversation.mode as Mode, content, history)) {
+        for await (const delta of streamAIReply(conversation.mode as Mode, content, history, attachment)) {
           full += delta;
           send({ type: "chunk", delta });
         }

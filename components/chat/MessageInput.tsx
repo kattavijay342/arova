@@ -1,15 +1,25 @@
 "use client";
 
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { Paperclip, Mic, Send, X, FileText } from "lucide-react";
+import { Paperclip, Mic, Send, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MODES } from "@/lib/modes";
-import type { Mode } from "@/lib/types";
+import type { ImageAttachment, Mode } from "@/lib/types";
+
+// Kept in sync with the server-side allow-list in
+// app/api/conversations/[id]/messages/route.ts.
+const ALLOWED_IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/webp", "image/heic", "image/heif"];
+const MAX_IMAGE_BYTES = 4 * 1024 * 1024; // 4MB
+
+interface AttachedImage {
+  file: File;
+  dataUrl: string;
+}
 
 interface MessageInputProps {
   value: string;
   onChange: (value: string) => void;
-  onSend: (text: string) => void;
+  onSend: (text: string, attachment?: ImageAttachment | null) => void;
   mode: Mode;
   disabled?: boolean;
   placeholder?: string;
@@ -19,7 +29,8 @@ export function MessageInput({ value, onChange, onSend, mode, disabled, placehol
   const modeConfig = MODES[mode];
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [attachedFile, setAttachedFile] = useState<File | null>(null);
+  const [attachedImage, setAttachedImage] = useState<AttachedImage | null>(null);
+  const [attachError, setAttachError] = useState<string | null>(null);
 
   useEffect(() => {
     const el = textareaRef.current;
@@ -30,12 +41,16 @@ export function MessageInput({ value, onChange, onSend, mode, disabled, placehol
 
   function handleSend() {
     if (disabled) return;
-    const withAttachment = attachedFile
-      ? `${value.trim()}${value.trim() ? "\n\n" : ""}📎 Attached: ${attachedFile.name}`
-      : value;
-    if (!withAttachment.trim()) return;
-    setAttachedFile(null);
-    onSend(withAttachment);
+    if (!value.trim() && !attachedImage) return;
+
+    const attachment: ImageAttachment | null = attachedImage
+      ? { mimeType: attachedImage.file.type, data: attachedImage.dataUrl.split(",")[1] ?? "" }
+      : null;
+
+    const text = value;
+    setAttachedImage(null);
+    setAttachError(null);
+    onSend(text, attachment);
   }
 
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
@@ -47,11 +62,28 @@ export function MessageInput({ value, onChange, onSend, mode, disabled, placehol
 
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
-    if (file) setAttachedFile(file);
     e.target.value = "";
+    if (!file) return;
+
+    if (!ALLOWED_IMAGE_MIME_TYPES.includes(file.type)) {
+      setAttachError("Only PNG, JPEG, WEBP, HEIC, or HEIF images are supported.");
+      return;
+    }
+    if (file.size > MAX_IMAGE_BYTES) {
+      setAttachError("Image is too large — the limit is 4MB.");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      setAttachError(null);
+      setAttachedImage({ file, dataUrl: reader.result as string });
+    };
+    reader.onerror = () => setAttachError("Could not read the selected image.");
+    reader.readAsDataURL(file);
   }
 
-  const canSend = !disabled && (value.trim().length > 0 || attachedFile !== null);
+  const canSend = !disabled && (value.trim().length > 0 || attachedImage !== null);
 
   return (
     <div className="border-t border-border-soft bg-surface px-5 py-4 sm:px-8">
@@ -69,12 +101,17 @@ export function MessageInput({ value, onChange, onSend, mode, disabled, placehol
             {modeConfig.assistantLabel}
           </span>
         </div>
-        {attachedFile && (
+        {attachedImage && (
           <div className="mb-2 inline-flex items-center gap-2 rounded-lg border border-border bg-bg px-3 py-1.5 text-[13px] text-text">
-            <FileText className="h-3.5 w-3.5 flex-none text-brand" aria-hidden />
-            <span className="max-w-[220px] truncate">{attachedFile.name}</span>
+            {/* eslint-disable-next-line @next/next/no-img-element -- short-lived local preview of a just-picked file, not worth next/image here */}
+            <img
+              src={attachedImage.dataUrl}
+              alt=""
+              className="h-6 w-6 flex-none rounded object-cover"
+            />
+            <span className="max-w-[220px] truncate">{attachedImage.file.name}</span>
             <button
-              onClick={() => setAttachedFile(null)}
+              onClick={() => setAttachedImage(null)}
               aria-label="Remove attachment"
               className="text-faint hover:text-text"
             >
@@ -82,12 +119,13 @@ export function MessageInput({ value, onChange, onSend, mode, disabled, placehol
             </button>
           </div>
         )}
+        {attachError && <p className="mb-2 text-[13px] text-danger">{attachError}</p>}
         <div className="flex items-end gap-1.5 rounded-2xl border border-border bg-bg px-2 py-2 focus-within:border-brand focus-within:ring-2 focus-within:ring-brand">
           <input
             ref={fileInputRef}
             type="file"
             className="hidden"
-            accept=".pdf,.doc,.docx,.png,.jpg,.jpeg"
+            accept="image/png,image/jpeg,image/webp,image/heic,image/heif"
             onChange={handleFileChange}
           />
           <button
