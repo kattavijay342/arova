@@ -1,15 +1,21 @@
 "use client";
 
+import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { CheckCircle2, AlertTriangle, RotateCcw, FileText } from "lucide-react";
+import { CheckCircle2, AlertTriangle, RotateCcw, FileText, Download, Loader2 } from "lucide-react";
 import type { ScoreData } from "@/lib/interview";
+import { extractInterviewTranscript } from "@/lib/interview";
 import { MODES } from "@/lib/modes";
+import { cn } from "@/lib/utils";
 import { useChat } from "@/lib/context/ChatContext";
 
-export function InterviewResultsCard({ data }: { data: ScoreData }) {
+type PdfState = "idle" | "generating" | "error";
+
+export function InterviewResultsCard({ data, conversationId }: { data: ScoreData; conversationId: string }) {
   const router = useRouter();
-  const { createConversation } = useChat();
+  const { createConversation, getConversation } = useChat();
   const career = MODES.career;
+  const [pdfState, setPdfState] = useState<PdfState>("idle");
 
   function handlePracticeAgain() {
     const id = createConversation("career");
@@ -18,6 +24,26 @@ export function InterviewResultsCard({ data }: { data: ScoreData }) {
 
   function handleViewDetails(e: React.MouseEvent<HTMLButtonElement>) {
     e.currentTarget.closest("main")?.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  async function handleExportReport() {
+    if (pdfState === "generating") return;
+    setPdfState("generating");
+    try {
+      const conversation = getConversation(conversationId);
+      const transcript = conversation ? extractInterviewTranscript(conversation.messages) : null;
+      if (!transcript) throw new Error("Interview transcript is not available.");
+
+      // Code-split: jsPDF and the markdown parser it needs are only fetched
+      // when a user actually exports a report.
+      const { exportInterviewReportPdf } = await import("@/lib/pdf/exportInterviewReportPdf");
+      await exportInterviewReportPdf(transcript);
+      setPdfState("idle");
+    } catch (err) {
+      console.error("[pdf] interview report export failed:", err);
+      setPdfState("error");
+      setTimeout(() => setPdfState("idle"), 3000);
+    }
   }
 
   return (
@@ -104,6 +130,29 @@ export function InterviewResultsCard({ data }: { data: ScoreData }) {
           View Detailed Report
         </button>
       </div>
+      <button
+        type="button"
+        onClick={handleExportReport}
+        disabled={pdfState === "generating"}
+        aria-label="Export Interview Report PDF"
+        aria-busy={pdfState === "generating"}
+        className={cn(
+          "mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg border border-border bg-surface px-4 py-2.5 text-sm font-semibold text-text transition-colors hover:bg-border-soft",
+          pdfState === "generating" && "cursor-not-allowed opacity-60"
+        )}
+      >
+        {pdfState === "generating" ? (
+          <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+        ) : (
+          <Download className="h-3.5 w-3.5" aria-hidden />
+        )}
+        {pdfState === "generating" ? "Generating PDF..." : "Export Interview Report PDF"}
+      </button>
+      {pdfState === "error" && (
+        <p role="status" className="mt-2 text-center text-[13px] text-danger">
+          Unable to generate PDF. Please try again.
+        </p>
+      )}
       <p className="mt-3 text-center text-[13px] text-faint">
         AI-generated feedback based on your answers — scores may vary between practice runs.
       </p>

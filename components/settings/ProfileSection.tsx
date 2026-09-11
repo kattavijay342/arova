@@ -16,7 +16,7 @@ export function ProfileSection() {
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    updateProfile({ name: name.trim() || user?.name, email: email.trim() || user?.email });
+    void updateProfile({ name: name.trim() || user?.name, email: email.trim() || user?.email });
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   }

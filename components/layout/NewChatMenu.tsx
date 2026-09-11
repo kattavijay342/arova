@@ -7,13 +7,22 @@ import { MODE_LIST } from "@/lib/modes";
 import type { Mode } from "@/lib/types";
 import { useChat } from "@/lib/context/ChatContext";
 import { cn } from "@/lib/utils";
+import { Tooltip } from "@/components/ui/Tooltip";
 
 /**
  * "New chat" opens a small inline mode picker instead of navigating to a
  * full page — picking a mode creates the conversation and goes straight
  * there, so starting a new chat is one click + one pick, not two screens.
  */
-export function NewChatMenu({ collapsed, onNavigate }: { collapsed?: boolean; onNavigate?: () => void }) {
+export function NewChatMenu({
+  collapsed,
+  onNavigate,
+  projectId,
+}: {
+  collapsed?: boolean;
+  onNavigate?: () => void;
+  projectId?: string;
+}) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
   const router = useRouter();
@@ -38,26 +47,37 @@ export function NewChatMenu({ collapsed, onNavigate }: { collapsed?: boolean; on
   async function pick(modeId: Mode) {
     setOpen(false);
     onNavigate?.();
-    const id = await createConversation(modeId);
+    const id = await createConversation(modeId, projectId);
     router.push(`/chat/${id}`);
   }
 
+  const trigger = (
+    <button
+      onClick={() => setOpen((o) => !o)}
+      aria-label="New chat"
+      aria-haspopup="menu"
+      aria-expanded={open}
+      className={cn(
+        "flex w-full items-center justify-center gap-2 rounded-lg bg-brand px-3 py-3 text-[15px] font-semibold text-white shadow-soft transition-all",
+        "hover:scale-[1.02] hover:opacity-95 hover:shadow-lg active:scale-[0.98]",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-bg",
+        collapsed && "md:mx-auto md:h-11 md:w-11 md:rounded-full md:p-0"
+      )}
+    >
+      <Plus className="h-[18px] w-[18px] flex-none" aria-hidden />
+      <span className={cn(collapsed && "md:hidden")}>New Chat</span>
+    </button>
+  );
+
   return (
     <div className="relative" ref={wrapRef}>
-      <button
-        onClick={() => setOpen((o) => !o)}
-        title="New chat"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        className={cn(
-          "flex w-full items-center justify-center gap-2 rounded-lg bg-brand px-3 py-3 text-[15px] font-semibold text-white shadow-soft transition-all",
-          "hover:scale-[1.02] hover:opacity-95 hover:shadow-lg active:scale-[0.98]",
-          collapsed && "md:mx-auto md:h-11 md:w-11 md:rounded-full md:p-0"
-        )}
-      >
-        <Plus className="h-[18px] w-[18px] flex-none" aria-hidden />
-        <span className={cn(collapsed && "md:hidden")}>New Chat</span>
-      </button>
+      {collapsed ? (
+        <Tooltip label="New chat" className="w-full">
+          {trigger}
+        </Tooltip>
+      ) : (
+        trigger
+      )}
 
       {open && (
         <div

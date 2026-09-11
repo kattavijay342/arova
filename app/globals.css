@@ -24,6 +24,18 @@
 
   --color-danger: #c23a3a;
   --color-danger-soft: #fbeaea;
+
+  --hljs-comment: #6a737d;
+  --hljs-keyword: #d73a49;
+  --hljs-entity: #005cc5;
+  --hljs-string: #032f62;
+  --hljs-title: #6f42c1;
+  --hljs-type: #6f42c1;
+  --hljs-tag: #22863a;
+  --hljs-deletion: #b31d28;
+  --hljs-deletion-bg: #ffeef0;
+  --hljs-addition: #22863a;
+  --hljs-addition-bg: #f0fff4;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -49,6 +61,18 @@
 
     --color-danger: #e26a6a;
     --color-danger-soft: #2c1616;
+
+    --hljs-comment: #8b949e;
+    --hljs-keyword: #ff7b72;
+    --hljs-entity: #79c0ff;
+    --hljs-string: #a5d6ff;
+    --hljs-title: #d2a8ff;
+    --hljs-type: #ffa657;
+    --hljs-tag: #7ee787;
+    --hljs-deletion: #ffa198;
+    --hljs-deletion-bg: #490202;
+    --hljs-addition: #7ee787;
+    --hljs-addition-bg: #04260f;
   }
 }
 
@@ -74,6 +98,18 @@
 
   --color-danger: #e26a6a;
   --color-danger-soft: #2c1616;
+
+  --hljs-comment: #8b949e;
+  --hljs-keyword: #ff7b72;
+  --hljs-entity: #79c0ff;
+  --hljs-string: #a5d6ff;
+  --hljs-title: #d2a8ff;
+  --hljs-type: #ffa657;
+  --hljs-tag: #7ee787;
+  --hljs-deletion: #ffa198;
+  --hljs-deletion-bg: #490202;
+  --hljs-addition: #7ee787;
+  --hljs-addition-bg: #04260f;
 }
 
 * {
@@ -128,6 +164,106 @@ body {
 .md-content :where(pre code) {
   background: none;
   padding: 0;
+}
+
+/* fenced code blocks — see components/chat/CodeBlock.tsx */
+.md-content .code-block {
+  position: relative;
+}
+.md-content .code-block pre {
+  /* extra top padding reserves room for the language label / copy button
+     floating above the code, so they never overlap the first line. */
+  padding-top: 2.25em;
+}
+.code-block-lang {
+  position: absolute;
+  top: 0.6em;
+  left: 1em;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.75em;
+  color: var(--color-text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  pointer-events: none;
+}
+.code-block-copy {
+  position: absolute;
+  top: 0.5em;
+  right: 0.6em;
+  display: flex;
+  align-items: center;
+  gap: 0.3em;
+  padding: 0.25em 0.55em;
+  border-radius: 6px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  font-size: 0.78em;
+  line-height: 1.4;
+}
+.code-block-copy:hover {
+  color: var(--color-text);
+  border-color: var(--color-text-faint);
+}
+
+/* syntax highlighting tokens (rehype-highlight / lowlight) */
+.hljs-comment,
+.hljs-quote {
+  color: var(--hljs-comment);
+  font-style: italic;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-subst,
+.hljs-doctag {
+  color: var(--hljs-keyword);
+}
+.hljs-number,
+.hljs-literal,
+.hljs-variable,
+.hljs-template-variable,
+.hljs-attr,
+.hljs-built_in,
+.hljs-builtin-name {
+  color: var(--hljs-entity);
+}
+.hljs-string,
+.hljs-regexp {
+  color: var(--hljs-string);
+}
+.hljs-title,
+.hljs-section,
+.hljs-selector-id {
+  color: var(--hljs-title);
+  font-weight: 600;
+}
+.hljs-type,
+.hljs-class .hljs-title {
+  color: var(--hljs-type);
+}
+.hljs-name,
+.hljs-tag,
+.hljs-selector-class,
+.hljs-symbol,
+.hljs-bullet {
+  color: var(--hljs-tag);
+}
+.hljs-meta {
+  color: var(--hljs-comment);
+}
+.hljs-deletion {
+  color: var(--hljs-deletion);
+  background: var(--hljs-deletion-bg);
+}
+.hljs-addition {
+  color: var(--hljs-addition);
+  background: var(--hljs-addition-bg);
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: 700;
 }
 .md-content :where(table) {
   width: 100%;

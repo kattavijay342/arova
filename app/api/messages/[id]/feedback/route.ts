@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { fail, ok } from "@/lib/server/apiResponse";
+import { fail, failInternal, ok } from "@/lib/server/apiResponse";
 import { getSessionUser } from "@/lib/server/requireUser";
 import { checkRateLimit } from "@/lib/server/rateLimit";
 
@@ -42,7 +42,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
   try {
     message = await getOwnedAssistantMessage(supabase, params.id, user.id);
   } catch (err) {
-    return fail(500, "INTERNAL_ERROR", err instanceof Error ? err.message : "Lookup failed");
+    return failInternal("feedback", err);
   }
   if (!message) return fail(404, "NOT_FOUND", "Message not found");
   if (message.role !== "assistant") {
@@ -63,7 +63,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
     .select("rating, comment")
     .single();
 
-  if (error) return fail(500, "INTERNAL_ERROR", error.message);
+  if (error) return failInternal("feedback", error);
   return ok(data);
 }
 
@@ -81,6 +81,6 @@ export async function DELETE(request: Request, { params }: { params: { id: strin
     .eq("message_id", params.id)
     .eq("user_id", user.id);
 
-  if (error) return fail(500, "INTERNAL_ERROR", error.message);
+  if (error) return failInternal("feedback", error);
   return ok({ deleted: true });
 }

@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/context/AuthContext";
 import { ChatProvider } from "@/lib/context/ChatContext";
+import { ProjectProvider } from "@/lib/context/ProjectContext";
 import { AppShell } from "@/components/layout/AppShell";
 import { FullPageLoader } from "@/components/ui/Spinner";
 
@@ -21,7 +22,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   return (
     <ChatProvider>
-      <AppShell>{children}</AppShell>
+      <ProjectProvider>
+        <AppShell>{children}</AppShell>
+      </ProjectProvider>
     </ChatProvider>
   );
 }

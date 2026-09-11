@@ -56,7 +56,14 @@ const nextConfig = {
           { key: "X-Frame-Options", value: "DENY" },
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
-          { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
+          // microphone=(self) — an empty allowlist here (the previous
+          // value) disables the feature outright for every context,
+          // including same-origin, which silently broke the app's own
+          // voice-input feature (Web Speech API's SpeechRecognition needs
+          // microphone access) regardless of what the user allows in the
+          // browser's own permission prompt. camera/geolocation stay fully
+          // disabled — nothing in the app uses either.
+          { key: "Permissions-Policy", value: "camera=(), microphone=(self), geolocation=()" },
           ...(isDev
             ? []
             : [{ key: "Strict-Transport-Security", value: "max-age=63072000; includeSubDomains; preload" }]),

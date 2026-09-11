@@ -71,6 +71,12 @@ export function LoginForm() {
           placeholder="At least 6 characters"
           required
         />
+        <Link
+          href="/forgot-password"
+          className="-mt-2 self-end text-sm font-medium text-brand hover:underline"
+        >
+          Forgot password?
+        </Link>
         <Button type="submit" loading={loading} fullWidth>
           Log in
         </Button>
