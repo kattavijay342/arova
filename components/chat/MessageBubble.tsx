@@ -1,12 +1,13 @@
 "use client";
 
 import { memo, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { BrainCircuit, Check, Copy, Download, Loader2, Pencil, Square, ThumbsDown, ThumbsUp, Trash2, User, Volume2 } from "lucide-react";
+import { BrainCircuit, Check, Copy, Download, Loader2, Pencil, RefreshCw, Square, Telescope, ThumbsDown, ThumbsUp, Trash2, User, Volume2 } from "lucide-react";
 import { useAuth } from "@/lib/context/AuthContext";
 import type { FeedbackRating, Message, Mode } from "@/lib/types";
 import { MODES } from "@/lib/modes";
 import { cn, formatTime } from "@/lib/utils";
 import { parseScoreCard } from "@/lib/interview";
+import { parseQuizScoreCard } from "@/lib/quiz";
 import { resolveCareerExportKind, parseJobFitAnalysis } from "@/lib/career";
 import { parseDocumentMessage } from "@/lib/document";
 import { parseDatasetMessage } from "@/lib/dataset";
@@ -15,19 +16,29 @@ import { parseSearchCitationsMessage } from "@/lib/searchCitations";
 import { isSpeechSynthesisSupported, speak, stopSpeaking, stripMarkdownForSpeech } from "@/lib/speech";
 import { MessageContent } from "./MessageContent";
 import { InterviewResultsCard } from "./InterviewResultsCard";
+import { QuizResultsCard } from "./QuizResultsCard";
 import { JobFitAnalysisCard } from "./JobFitAnalysisCard";
 import { DocumentAttachmentChip } from "./DocumentAttachmentChip";
 import { DatasetAttachmentChip } from "./DatasetAttachmentChip";
+import { PersistedImageAttachment } from "./PersistedImageAttachment";
 import { GeneratedImageCard } from "./GeneratedImageCard";
 import { SearchSourcesCard } from "./SearchSourcesCard";
 
 const SCORE_MARKER = "Interview Complete";
+const QUIZ_SCORE_MARKER = "Quiz Complete";
 const JOB_FIT_HEADING = "Job Fit Analysis";
 
 type PdfState = "idle" | "generating" | "error";
 
 /** Which "Export ... PDF" button/label to show below a non-interview assistant reply, and what to brand the resulting PDF with. */
-function resolveExportConfig(mode: Mode, content: string): { label: string; modeLabel: string } | null {
+function resolveExportConfig(mode: Mode, content: string, isDeepResearch: boolean): { label: string; modeLabel: string } | null {
+  // Takes priority over the generic mode-based label below regardless of
+  // mode — a Deep Research report is a distinct kind of reply (see
+  // lib/searchCitations.ts's `deepResearch` flag), not just "this mode's
+  // usual answer, but longer."
+  if (isDeepResearch) {
+    return { label: "Export Research Report PDF", modeLabel: `${MODES[mode].label} — Deep Research` };
+  }
   if (mode === "student" || mode === "general") {
     return { label: "Export PDF", modeLabel: MODES[mode].label };
   }
@@ -49,6 +60,7 @@ function MessageBubbleImpl({
   onFeedback,
   onEdit,
   onDelete,
+  onRegenerate,
   onGenerateImage,
   imageGenerating,
 }: {
@@ -62,6 +74,8 @@ function MessageBubbleImpl({
   onFeedback: (conversationId: string, messageId: string, rating: FeedbackRating) => void;
   onEdit: (conversationId: string, messageId: string, content: string) => void;
   onDelete: (conversationId: string, messageId: string) => void;
+  /** Present only when this is the conversation's last message and it's safe to regenerate (see MessageList) — absent hides the button entirely. */
+  onRegenerate?: (conversationId: string, messageId: string) => void;
   onGenerateImage: (conversationId: string, prompt: string) => void;
   /** True while any image generation is in flight — disables every Regenerate button so a second click can't fire a concurrent request. */
   imageGenerating?: boolean;
@@ -121,6 +135,16 @@ function MessageBubbleImpl({
     ? message.content.slice(0, message.content.indexOf(`#### ${SCORE_MARKER}`)).trim()
     : null;
 
+  // A completed practice quiz (Student mode) shows a results card instead
+  // of raw markdown — see lib/quiz.ts's parseQuizScoreCard. Mirrors scoreData above.
+  const quizScoreData = useMemo(
+    () => (isUser || mode !== "student" ? null : parseQuizScoreCard(message.content)),
+    [isUser, mode, message.content]
+  );
+  const preQuizContent = quizScoreData
+    ? message.content.slice(0, message.content.indexOf(`#### ${QUIZ_SCORE_MARKER}`)).trim()
+    : null;
+
   // A job-fit analysis (Career mode only) shows a structured match card
   // instead of raw markdown — see lib/career.ts's parseJobFitAnalysis.
   const jobFitData = useMemo(
@@ -148,44 +172,58 @@ function MessageBubbleImpl({
     [isUser, message.content]
   );
   const cleanContent = parsedCitations?.content ?? message.content;
+  const isDeepResearch = Boolean(parsedCitations?.deepResearch);
 
   const exportConfig =
-    !isUser && !scoreData && !generatedImage && !jobFitData ? resolveExportConfig(mode, cleanContent) : null;
+    !isUser && !scoreData && !quizScoreData && !generatedImage && !jobFitData
+      ? resolveExportConfig(mode, cleanContent, isDeepResearch)
+      : null;
 
   // A document attachment shows a file chip instead of raw extracted text.
   // `message.documentMeta` is set directly for a message sent this session;
   // after a reload it's reconstructed by parsing the persisted
   // `[[document: ...]]` marker back out of `content` (see lib/document.ts).
-  const parsedDocument = useMemo(
-    () => (isUser && !message.documentMeta ? parseDocumentMessage(message.content) : null),
-    [isUser, message.documentMeta, message.content]
-  );
+  // Always parsed (not skipped just because `documentMeta` is already known)
+  // because `content` itself is also the only source of the *caption* below
+  // once the real server content — which embeds the full extracted text —
+  // has synced in over the client's original clean caption; skipping the
+  // parse in that case used to leave the entire embedded block showing as
+  // the visible message text instead of just what the user typed.
+  const parsedDocument = useMemo(() => (isUser ? parseDocumentMessage(message.content) : null), [isUser, message.content]);
   const documentMeta = message.documentMeta ?? parsedDocument?.meta ?? null;
   const hasDocumentAttachment = Boolean(documentMeta);
 
   // Same idea as a document attachment, for a dataset (CSV) — see lib/dataset.ts.
-  const parsedDataset = useMemo(
-    () => (isUser && !message.datasetMeta ? parseDatasetMessage(message.content) : null),
-    [isUser, message.datasetMeta, message.content]
-  );
+  const parsedDataset = useMemo(() => (isUser ? parseDatasetMessage(message.content) : null), [isUser, message.content]);
   const datasetMeta = message.datasetMeta ?? parsedDataset?.meta ?? null;
   const hasDatasetAttachment = Boolean(datasetMeta);
 
-  const captionText = message.documentMeta
-    ? message.content
-    : message.datasetMeta
-      ? message.content
-      : parsedDocument
-        ? parsedDocument.caption
-        : parsedDataset
-          ? parsedDataset.caption
-          : generatedImage
-            ? generatedImage.caption
-            : cleanContent;
+  // True for the current session's just-sent image (imageDataUrl, client-only)
+  // *or* a reloaded message whose only persisted attachment signal is
+  // `hasFileAttachment` with no document/dataset marker — see the render
+  // branch below for why that combination can only mean an image. Used to
+  // disable Edit consistently regardless of which case applies — before
+  // this, editing was only blocked for the current session's own image
+  // send; a reloaded one had no client-visible way to know, so Edit would
+  // silently drop the fact that image context existed for that turn.
+  const hasImageAttachment = Boolean(message.imageDataUrl) || (Boolean(message.hasFileAttachment) && !hasDocumentAttachment && !hasDatasetAttachment);
+
+  const captionText = parsedDocument
+    ? parsedDocument.caption
+    : parsedDataset
+      ? parsedDataset.caption
+      : generatedImage
+        ? generatedImage.caption
+        : cleanContent;
 
   function handleRegenerate() {
     if (!generatedImage || imageGenerating) return;
     onGenerateImage(conversationId, generatedImage.prompt);
+  }
+
+  function handleRegenerateResponse() {
+    if (!onRegenerate || disableActions) return;
+    onRegenerate(conversationId, message.id);
   }
 
   async function handleCopy() {
@@ -280,10 +318,21 @@ function MessageBubbleImpl({
       // when a user actually exports, instead of bloating the chat page's
       // initial bundle for every mode and every user.
       const { exportChatResponseAsPdf } = await import("@/lib/pdf/exportChatResponsePdf");
+      // A grounded reply's cited sources are stripped out of cleanContent
+      // (see parsedCitations above) so they never leak into the visible
+      // bubble/Copy/Listen text — but a research report exported without
+      // its sources would be far less useful, so they're appended back on
+      // here as a real "Sources" section. pdfEngine already renders
+      // markdown links as clickable text (verified in lib/pdf/pdfEngine.ts),
+      // so a plain numbered list of `[title](url)` works as-is.
+      const sourcesMarkdown =
+        parsedCitations && parsedCitations.sources.length > 0
+          ? `\n\n## Sources\n${parsedCitations.sources.map((s, i) => `${i + 1}. [${s.title}](${s.uri})`).join("\n")}`
+          : "";
       await exportChatResponseAsPdf({
         modeLabel: exportConfig.modeLabel,
         question: questionContent ?? "",
-        answer: cleanContent,
+        answer: cleanContent + sourcesMarkdown,
       });
       setPdfState("idle");
     } catch (err) {
@@ -322,6 +371,18 @@ function MessageBubbleImpl({
               </div>
             )}
             <InterviewResultsCard data={scoreData} conversationId={conversationId} />
+          </div>
+        ) : quizScoreData ? (
+          <div className="flex w-full flex-col gap-3">
+            {preQuizContent && (
+              <div
+                className="rounded-2xl rounded-tl-sm border-2 bg-surface-raised px-4 py-3 text-text"
+                style={{ borderColor: modeConfig.colorSoft }}
+              >
+                <MessageContent content={preQuizContent} />
+              </div>
+            )}
+            <QuizResultsCard data={quizScoreData} />
           </div>
         ) : jobFitData ? (
           <div className="flex w-full flex-col gap-3">
@@ -374,20 +435,49 @@ function MessageBubbleImpl({
             style={!isUser ? { borderColor: modeConfig.colorSoft } : undefined}
           >
             {isUser && message.imageDataUrl && (
-              // eslint-disable-next-line @next/next/no-img-element -- ephemeral, client-only preview of an unpersisted attachment; not worth next/image here
+              // eslint-disable-next-line @next/next/no-img-element -- ephemeral, client-only preview of the just-sent attachment; not worth next/image here
               <img
                 src={message.imageDataUrl}
                 alt="Attached"
                 className="max-h-64 w-full rounded-lg object-contain"
               />
             )}
+            {isUser && !message.imageDataUrl && hasImageAttachment && <PersistedImageAttachment messageId={message.id} />}
             {documentMeta && (
-              <DocumentAttachmentChip meta={documentMeta} extractedText={parsedDocument?.extractedText} onLight={isUser} />
+              <DocumentAttachmentChip
+                meta={documentMeta}
+                extractedText={parsedDocument?.extractedText}
+                messageId={message.id}
+                hasFileAttachment={message.hasFileAttachment}
+                onLight={isUser}
+              />
             )}
-            {datasetMeta && <DatasetAttachmentChip meta={datasetMeta} csvText={parsedDataset?.csvText} onLight={isUser} />}
+            {datasetMeta && (
+              <DatasetAttachmentChip
+                meta={datasetMeta}
+                csvText={parsedDataset?.csvText}
+                messageId={message.id}
+                hasFileAttachment={message.hasFileAttachment}
+                onLight={isUser}
+              />
+            )}
+            {isDeepResearch && (
+              <span
+                className="flex w-fit items-center gap-1.5 rounded-full px-2.5 py-1 font-mono text-[11px] font-semibold uppercase tracking-wide"
+                style={{ backgroundColor: modeConfig.colorSoft, color: modeConfig.color }}
+              >
+                <Telescope className="h-3 w-3" aria-hidden />
+                Research Report
+              </span>
+            )}
             {captionText && <MessageContent content={captionText} />}
             {generatedImage && (
-              <GeneratedImageCard image={generatedImage} onRegenerate={handleRegenerate} regenerating={Boolean(imageGenerating)} />
+              <GeneratedImageCard
+                image={generatedImage}
+                messageId={message.id}
+                onRegenerate={handleRegenerate}
+                regenerating={Boolean(imageGenerating)}
+              />
             )}
             {parsedCitations && <SearchSourcesCard sources={parsedCitations.sources} />}
           </div>
@@ -399,10 +489,10 @@ function MessageBubbleImpl({
               <>
                 <button
                   onClick={startEdit}
-                  disabled={disableActions || Boolean(message.imageDataUrl) || hasDocumentAttachment || hasDatasetAttachment}
+                  disabled={disableActions || hasImageAttachment || hasDocumentAttachment || hasDatasetAttachment}
                   aria-label="Edit your message"
                   title={
-                    message.imageDataUrl || hasDocumentAttachment || hasDatasetAttachment
+                    hasImageAttachment || hasDocumentAttachment || hasDatasetAttachment
                       ? "Editing isn't available for messages with an attached file"
                       : "Edit message"
                   }
@@ -455,6 +545,17 @@ function MessageBubbleImpl({
                   {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
                   {copied ? "Copied" : "Copy"}
                 </button>
+                {onRegenerate && !scoreData && !quizScoreData && !jobFitData && !generatedImage && (
+                  <button
+                    onClick={handleRegenerateResponse}
+                    disabled={disableActions}
+                    aria-label="Regenerate this response"
+                    className="flex items-center gap-1 opacity-0 transition-opacity hover:text-text group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-0"
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" aria-hidden />
+                    Regenerate
+                  </button>
+                )}
                 {ttsSupported && (
                   <button
                     onClick={handleToggleSpeech}

@@ -14,6 +14,13 @@ export interface WebSource {
   uri: string;
 }
 
+/** The block's actual on-disk shape (see buildSearchCitationsBlock/parseSearchCitationsMessage below). */
+interface CitationsPayload {
+  sources: WebSource[];
+  /** True for a Deep Research reply (a more thorough, multi-angle investigation — see DEEP_RESEARCH_INSTRUCTION in lib/server/gemini.ts) rather than a plain grounded search. Lets the UI give it a distinct "Research Report" treatment and export label. */
+  deepResearch?: boolean;
+}
+
 function utf8ToBase64(str: string): string {
   if (typeof Buffer !== "undefined") return Buffer.from(str, "utf-8").toString("base64");
   const bytes = new TextEncoder().encode(str);
@@ -33,24 +40,35 @@ function base64ToUtf8(b64: string): string {
 const CITATIONS_RE = /\n\n\[\[search-citations:([A-Za-z0-9+/=]+)\]\]$/;
 
 /** Appends the sources Gemini's Google Search grounding cited to an assistant reply's persisted `content`. */
-export function buildSearchCitationsBlock(sources: WebSource[]): string {
-  const encoded = utf8ToBase64(JSON.stringify(sources));
+export function buildSearchCitationsBlock(sources: WebSource[], deepResearch?: boolean): string {
+  const payload: CitationsPayload = deepResearch ? { sources, deepResearch: true } : { sources };
+  const encoded = utf8ToBase64(JSON.stringify(payload));
   return `\n\n[[search-citations:${encoded}]]`;
 }
 
 export interface ParsedSearchCitations {
   sources: WebSource[];
+  deepResearch: boolean;
   /** The assistant's reply text with the citations block removed. */
   content: string;
 }
 
-/** Reconstructs the cited sources (and the clean reply text) from a persisted message's content, or null if it was never grounded. */
+/**
+ * Reconstructs the cited sources (and the clean reply text) from a
+ * persisted message's content, or null if it was never grounded. A message
+ * from before Deep Research's own "Research Report" treatment existed has a
+ * bare `WebSource[]` array as its payload rather than the current
+ * `{ sources, deepResearch? }` object — both are read correctly here, the
+ * older shape just always reads as `deepResearch: false`.
+ */
 export function parseSearchCitationsMessage(content: string): ParsedSearchCitations | null {
   const match = content.match(CITATIONS_RE);
   if (!match || match.index === undefined) return null;
   try {
-    const sources = JSON.parse(base64ToUtf8(match[1])) as WebSource[];
-    return { sources, content: content.slice(0, match.index).trimEnd() };
+    const parsed = JSON.parse(base64ToUtf8(match[1])) as WebSource[] | CitationsPayload;
+    const sources = Array.isArray(parsed) ? parsed : parsed.sources;
+    const deepResearch = !Array.isArray(parsed) && Boolean(parsed.deepResearch);
+    return { sources, deepResearch, content: content.slice(0, match.index).trimEnd() };
   } catch {
     return null;
   }

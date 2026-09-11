@@ -1,10 +1,13 @@
 import type { Message } from "./types";
 
 /**
- * Shared between the mock AI (which decides what to say next) and the chat
- * UI (which renders the progress bar / results card / recent-conversations
- * meta line) so all three agree on the same state from the same message
- * history — no separate state to drift.
+ * Only `.length` (10) is actually used, as the fixed question count the
+ * progress bar and interview-state parsing below expect (see
+ * SYSTEM_INSTRUCTIONS.career in lib/server/systemInstructions.ts, which
+ * tells Gemini to run exactly 10 questions). The question text here is
+ * *not* sent to the AI or shown anywhere — real questions are generated
+ * dynamically per role by Gemini itself. Kept as a readable illustration of
+ * a typical generic behavioral set, not as the actual bank.
  */
 export const INTERVIEW_QUESTIONS = [
   "Tell me about a time you had to meet a tight deadline. What did you do?",
@@ -110,6 +113,33 @@ export function extractScore(messages: Message[]): number | null {
     }
   }
   return null;
+}
+
+export interface CompletedInterviewSummary {
+  role: string;
+  score: number;
+  /** Timestamp of the message that declared the interview complete. */
+  completedAt: string;
+}
+
+/**
+ * Returns null unless this conversation is a *finished* mock interview with
+ * a real parsed score — used to build cross-conversation progress tracking
+ * (see components/dashboard/CareerProgressSummary.tsx), which needs to tell
+ * a completed interview apart from one still in progress or one that was
+ * abandoned before the AI ever produced a score.
+ */
+export function getCompletedInterviewSummary(messages: Message[]): CompletedInterviewSummary | null {
+  const state = getInterviewState(messages);
+  if (!state || !state.complete) return null;
+
+  const scoreMessage = [...messages].reverse().find((m) => m.role === "assistant" && m.content.includes(SCORE_MARKER));
+  if (!scoreMessage) return null;
+
+  const score = parseScoreCard(scoreMessage.content)?.overall;
+  if (score === undefined) return null;
+
+  return { role: state.role, score, completedAt: scoreMessage.createdAt };
 }
 
 const QUESTION_LINE_RE = /^Mock interview — Question (\d+) of \d+\s*$/m;

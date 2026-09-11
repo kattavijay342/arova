@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { FileText, FolderClosed, Loader2, Paperclip, Pencil, Trash2 } from "lucide-react";
+import { Download, FileText, FolderClosed, Loader2, Paperclip, Pencil, Trash2 } from "lucide-react";
 import { useProjects } from "@/lib/context/ProjectContext";
 import { useChat } from "@/lib/context/ChatContext";
 import { Card } from "@/components/ui/Card";
@@ -20,6 +20,7 @@ interface RawProjectFile {
   char_count: number;
   truncated: boolean;
   created_at: string;
+  storage_path?: string | null;
 }
 
 function mapFile(f: RawProjectFile): ProjectFile {
@@ -30,6 +31,7 @@ function mapFile(f: RawProjectFile): ProjectFile {
     charCount: f.char_count,
     truncated: f.truncated,
     createdAt: f.created_at,
+    hasFileAttachment: Boolean(f.storage_path),
   };
 }
 
@@ -44,7 +46,7 @@ export default function ProjectPage() {
   const { projectId } = useParams<{ projectId: string }>();
   const router = useRouter();
   const { projects, hydrated, renameProject, updateInstructions, deleteProject } = useProjects();
-  const { conversations, deleteConversation, renameConversation } = useChat();
+  const { conversations, deleteConversation, renameConversation, moveConversationToProject } = useChat();
 
   const project = projects.find((p) => p.id === projectId);
   const projectConversations = conversations
@@ -61,6 +63,7 @@ export default function ProjectPage() {
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [deletingFileId, setDeletingFileId] = useState<string | null>(null);
+  const [downloadingFileId, setDownloadingFileId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -173,6 +176,19 @@ export default function ProjectPage() {
       setUploadError("Could not delete that file. Please try again.");
     } finally {
       setDeletingFileId(null);
+    }
+  }
+
+  async function handleDownloadFile(id: string) {
+    setDownloadingFileId(id);
+    try {
+      const { url } = await apiFetch<{ url: string }>(`/api/projects/${projectId}/files/${id}/attachment`);
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (err) {
+      console.error("[projects] failed to download file:", err);
+      setUploadError("Could not download that file. Please try again.");
+    } finally {
+      setDownloadingFileId(null);
     }
   }
 
@@ -290,18 +306,35 @@ export default function ProjectPage() {
                     </p>
                   </div>
                 </div>
-                <button
-                  onClick={() => handleDeleteFile(f.id)}
-                  disabled={deletingFileId === f.id}
-                  aria-label={`Delete file: ${f.filename}`}
-                  className="flex-none text-faint hover:text-danger disabled:opacity-50"
-                >
-                  {deletingFileId === f.id ? (
-                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-                  ) : (
-                    <Trash2 className="h-4 w-4" aria-hidden />
+                <div className="flex flex-none items-center gap-1">
+                  {f.hasFileAttachment && (
+                    <button
+                      onClick={() => handleDownloadFile(f.id)}
+                      disabled={downloadingFileId === f.id}
+                      aria-label={`Download original file: ${f.filename}`}
+                      title="Download original file"
+                      className="text-faint hover:text-text disabled:opacity-50"
+                    >
+                      {downloadingFileId === f.id ? (
+                        <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                      ) : (
+                        <Download className="h-4 w-4" aria-hidden />
+                      )}
+                    </button>
                   )}
-                </button>
+                  <button
+                    onClick={() => handleDeleteFile(f.id)}
+                    disabled={deletingFileId === f.id}
+                    aria-label={`Delete file: ${f.filename}`}
+                    className="text-faint hover:text-danger disabled:opacity-50"
+                  >
+                    {deletingFileId === f.id ? (
+                      <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                    ) : (
+                      <Trash2 className="h-4 w-4" aria-hidden />
+                    )}
+                  </button>
+                </div>
               </div>
             ))
           )}
@@ -321,6 +354,8 @@ export default function ProjectPage() {
                 active={false}
                 onDelete={deleteConversation}
                 onRename={renameConversation}
+                projects={projects}
+                onMove={moveConversationToProject}
               />
             ))}
           </div>

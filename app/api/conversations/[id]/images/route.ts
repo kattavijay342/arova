@@ -6,6 +6,7 @@ import { checkRateLimit } from "@/lib/server/rateLimit";
 import { isValidUuid } from "@/lib/server/validation";
 import { generateImage, ImageGenerationError } from "@/lib/server/imageGeneration";
 import { buildGeneratedImageBlock } from "@/lib/generatedImage";
+import { uploadAttachment } from "@/lib/server/storage";
 
 const generateImageSchema = z.object({
   prompt: z.string().trim().min(1, "Describe the image you want to generate").max(2000, "Prompt is too long"),
@@ -92,16 +93,51 @@ export async function POST(request: Request, { params }: { params: { id: string 
     return fail(500, "INTERNAL_ERROR", "Could not generate the image. Please try again.");
   }
 
-  const block = buildGeneratedImageBlock({ prompt, mimeType: result.mimeType }, result.data);
+  // Kept in Storage rather than embedded as base64 in `content` — the same
+  // reasoning as a user-uploaded attachment (see supabase/schema.sql's
+  // Phase 6 block), just for the assistant's side: a generated image can
+  // easily be several hundred KB of base64 *text*, which used to get
+  // re-transferred in full every time this conversation was opened, even
+  // though nothing renders it until this exact bubble scrolls into view.
+  const block = buildGeneratedImageBlock({ prompt, mimeType: result.mimeType });
   const assistantContent = result.text ? `${result.text}\n\n${block}` : block;
 
-  const { data: assistantMessage, error: assistantMsgError } = await supabase
+  const { data: insertedMessage, error: assistantMsgError } = await supabase
     .from("messages")
     .insert({ conversation_id: params.id, role: "assistant", content: assistantContent })
     .select()
     .single();
 
   if (assistantMsgError) return failInternal("images", assistantMsgError);
+
+  let assistantMessage = insertedMessage;
+  const buffer = Buffer.from(result.data, "base64");
+  const filename = `generated-image.${result.mimeType.split("/")[1] ?? "png"}`;
+  const path = await uploadAttachment(supabase, user.id, `${params.id}/${insertedMessage.id}`, filename, buffer, result.mimeType);
+
+  if (path) {
+    const { data: updated } = await supabase
+      .from("messages")
+      .update({ attachment_path: path, attachment_filename: filename, attachment_mime_type: result.mimeType })
+      .eq("id", insertedMessage.id)
+      .select()
+      .single();
+    if (updated) assistantMessage = updated;
+  } else {
+    // Storage failed (most likely: the bucket hasn't been created yet — see
+    // supabase/schema.sql) — fall back to embedding the image directly in
+    // `content` so it's never silently lost, exactly the shape every
+    // already-generated image already used before Storage existed.
+    const fallbackBlock = buildGeneratedImageBlock({ prompt, mimeType: result.mimeType }, result.data);
+    const fallbackContent = result.text ? `${result.text}\n\n${fallbackBlock}` : fallbackBlock;
+    const { data: updated } = await supabase
+      .from("messages")
+      .update({ content: fallbackContent })
+      .eq("id", insertedMessage.id)
+      .select()
+      .single();
+    if (updated) assistantMessage = updated;
+  }
 
   await supabase
     .from("conversations")

@@ -46,6 +46,20 @@ export async function POST(request: Request) {
     return fail(400, "BAD_REQUEST", "Validation failed", parsed.error.issues);
   }
 
+  // Idempotent: saving the exact same text again — most commonly, clicking
+  // "Remember this" a second time on a message already saved — returns the
+  // existing row instead of creating a duplicate. Checked before the count
+  // limit below so a repeat save is never rejected just because the user
+  // happens to be at the cap.
+  const { data: existing, error: existingError } = await supabase
+    .from("user_memories")
+    .select("*")
+    .eq("user_id", user.id)
+    .eq("content", parsed.data.content)
+    .maybeSingle();
+  if (existingError) return failInternal("memories", existingError);
+  if (existing) return ok(existing);
+
   // A generous but real ceiling — keeps a runaway client (or a user who
   // never prunes) from growing the context injected into every single
   // message without bound.

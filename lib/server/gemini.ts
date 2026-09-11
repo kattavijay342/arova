@@ -66,12 +66,24 @@ export interface StreamReplyOptions {
   memoryContext?: string;
   customInstructions?: string;
   projectContext?: string;
+  /** Student mode only — a short summary of past practice-quiz subjects/scores (see lib/server/studyProgress.ts), used to calibrate a new quiz's difficulty. */
+  studyProgressContext?: string;
   webSearch?: boolean;
   deepResearch?: boolean;
   codeExecution?: boolean;
   jobFitAnalysis?: boolean;
   /** Invoked once, after streaming finishes, with the sources Google Search grounding cited — only ever called when `webSearch`/`deepResearch` was set and grounding actually happened. */
   onSources?: (sources: WebSource[]) => void;
+  /**
+   * Wired to the incoming request's own `signal` (see the messages route) so
+   * a client-initiated "Stop generating" click — or the client simply
+   * disconnecting — cancels the underlying Gemini call instead of letting it
+   * keep running to completion server-side for no one. Both Gemini SDKs
+   * accept this directly (verified against their installed type
+   * definitions): `@google/generative-ai` as a `SingleRequestOptions.signal`
+   * second argument, `@google/genai` as `GenerateContentConfig.abortSignal`.
+   */
+  signal?: AbortSignal;
 }
 
 const DATA_ANALYSIS_INSTRUCTION =
@@ -125,6 +137,9 @@ function buildSystemInstruction(mode: Mode, options?: StreamReplyOptions): strin
   if (options?.projectContext) {
     instruction += `\n\nThis conversation belongs to a project with its own instructions and/or reference files. Follow the project's instructions and use its files as context when relevant:\n${options.projectContext}`;
   }
+  if (options?.studyProgressContext) {
+    instruction += `\n\nQuiz-history context for calibrating a new quiz's difficulty (see the practice quiz formatting instructions above):\n${options.studyProgressContext}`;
+  }
   if (options?.deepResearch) {
     instruction += DEEP_RESEARCH_INSTRUCTION;
   }
@@ -163,9 +178,10 @@ export async function* streamGeminiReply(
   ];
 
   let sawText = false;
+  const signal = options?.signal;
 
   if (options?.codeExecution) {
-    yield* streamCodeExecutionReply(apiKey, modelName, systemInstruction, contents);
+    yield* streamCodeExecutionReply(apiKey, modelName, systemInstruction, contents, signal);
     return;
   }
 
@@ -181,7 +197,7 @@ export async function* streamGeminiReply(
   });
 
   try {
-    const result = await model.generateContentStream({ contents });
+    const result = await model.generateContentStream({ contents }, { signal });
     for await (const chunk of result.stream) {
       const text = chunk.text();
       if (text) {
@@ -190,11 +206,19 @@ export async function* streamGeminiReply(
       }
     }
   } catch (err) {
+    // A client-initiated stop (or disconnect) surfaces here as the SDK's
+    // own request aborting — not a real failure, so it's reported to the
+    // caller as a clean end of the stream instead of a scary error. The
+    // caller (messages route) still persists whatever text was yielded
+    // before the stop, via `full` — this function has no way to know that
+    // was "enough," it just stops producing more.
+    if (signal?.aborted) return;
     console.error("[gemini] request failed:", err);
     throw new Error("The AI assistant is temporarily unavailable. Please try again in a moment.");
   }
 
   if (!sawText) {
+    if (signal?.aborted) return;
     throw new Error("The assistant returned an empty response.");
   }
 }
@@ -215,6 +239,7 @@ async function* streamGroundedReply(
   options: StreamReplyOptions
 ): AsyncGenerator<string, void, unknown> {
   const ai = new GoogleGenAI({ apiKey });
+  const signal = options.signal;
 
   let sawText = false;
   let sources: WebSource[] = [];
@@ -223,7 +248,7 @@ async function* streamGroundedReply(
     const stream = await ai.models.generateContentStream({
       model: modelName,
       contents,
-      config: { systemInstruction, tools: [{ googleSearch: {} }] },
+      config: { systemInstruction, tools: [{ googleSearch: {} }], abortSignal: signal },
     });
 
     for await (const chunk of stream) {
@@ -242,11 +267,14 @@ async function* streamGroundedReply(
       }
     }
   } catch (err) {
+    // See the plain-path comment above — an aborted stream ends here too.
+    if (signal?.aborted) return;
     console.error("[gemini] search-grounded request failed:", err);
     throw new Error("The AI assistant is temporarily unavailable. Please try again in a moment.");
   }
 
   if (!sawText) {
+    if (signal?.aborted) return;
     throw new Error("The assistant returned an empty response.");
   }
 
@@ -291,7 +319,8 @@ async function* streamCodeExecutionReply(
   apiKey: string,
   modelName: string,
   systemInstruction: string,
-  contents: { role: "user" | "model"; parts: Record<string, unknown>[] }[]
+  contents: { role: "user" | "model"; parts: Record<string, unknown>[] }[],
+  signal?: AbortSignal
 ): AsyncGenerator<string, void, unknown> {
   const ai = new GoogleGenAI({ apiKey });
 
@@ -301,7 +330,7 @@ async function* streamCodeExecutionReply(
     const stream = await ai.models.generateContentStream({
       model: modelName,
       contents,
-      config: { systemInstruction, tools: [{ codeExecution: {} }] },
+      config: { systemInstruction, tools: [{ codeExecution: {} }], abortSignal: signal },
     });
 
     for await (const chunk of stream) {
@@ -322,11 +351,14 @@ async function* streamCodeExecutionReply(
       }
     }
   } catch (err) {
+    // See the plain-path comment above — an aborted stream ends here too.
+    if (signal?.aborted) return;
     console.error("[gemini] code-execution request failed:", err);
     throw new Error("The AI assistant is temporarily unavailable. Please try again in a moment.");
   }
 
   if (!sawText) {
+    if (signal?.aborted) return;
     throw new Error("The assistant returned an empty response.");
   }
 }

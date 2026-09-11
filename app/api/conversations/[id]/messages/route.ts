@@ -19,6 +19,9 @@ import {
 import { getMemoryContext } from "@/lib/server/memory";
 import { getCustomInstructions } from "@/lib/server/personalization";
 import { getProjectContext } from "@/lib/server/project";
+import { getStudyProgressContext } from "@/lib/server/studyProgress";
+import { uploadAttachment } from "@/lib/server/storage";
+import { matchesImageSignature } from "@/lib/server/fileSignature";
 import type { Mode } from "@/lib/types";
 
 // Kept in sync with the client-side allow-list in components/chat/MessageInput.tsx.
@@ -133,15 +136,25 @@ export async function POST(request: Request, { params }: { params: { id: string 
   // byte size server-side, since base64 padding/whitespace can skew that
   // estimate — never trust the client's reported size.
   if (attachment) {
-    const decodedBytes = Buffer.from(attachment.data, "base64").length;
-    if (attachment.kind === "image" && decodedBytes > MAX_IMAGE_DECODED_BYTES) {
+    const decodedBuffer = Buffer.from(attachment.data, "base64");
+    if (attachment.kind === "image" && decodedBuffer.length > MAX_IMAGE_DECODED_BYTES) {
       return fail(400, "BAD_REQUEST", "Image is too large. Maximum size is 4MB.");
     }
-    if (attachment.kind === "document" && decodedBytes > MAX_DOCUMENT_BYTES) {
+    if (attachment.kind === "document" && decodedBuffer.length > MAX_DOCUMENT_BYTES) {
       return fail(400, "BAD_REQUEST", "File is too large. Maximum size is 10MB.");
     }
-    if (attachment.kind === "dataset" && decodedBytes > MAX_DATASET_BYTES) {
+    if (attachment.kind === "dataset" && decodedBuffer.length > MAX_DATASET_BYTES) {
       return fail(400, "BAD_REQUEST", "File is too large. Maximum size is 10MB.");
+    }
+    // The declared `mimeType` above is only ever checked against an
+    // allow-list of strings — never that the bytes actually are what they
+    // claim to be. An image is the one attachment kind where that matters:
+    // it's never parsed server-side (unlike a document, where a real
+    // PDF/DOCX parser would already reject mismatched bytes), so a
+    // mislabeled file would otherwise sail straight through to Gemini and
+    // Storage. See lib/server/fileSignature.ts.
+    if (attachment.kind === "image" && !matchesImageSignature(decodedBuffer, attachment.mimeType)) {
+      return fail(400, "BAD_REQUEST", "This file doesn't look like a valid image. Please try a different file.");
     }
   }
 
@@ -175,7 +188,13 @@ export async function POST(request: Request, { params }: { params: { id: string 
       return fail(400, "BAD_REQUEST", "This file appears to be empty.");
     }
     const truncated = raw.length > MAX_EXTRACTED_CHARS;
-    const csvText = truncated ? raw.slice(0, MAX_EXTRACTED_CHARS) : raw;
+    // Cut at the last complete line, not a raw character offset — a CSV
+    // sliced mid-row leaves a malformed final line (a partial value with no
+    // closing column) that makes pandas' read_csv either throw a
+    // ParserError or silently misparse the row, corrupting the very
+    // analysis the user asked for.
+    const lastNewline = raw.lastIndexOf("\n", MAX_EXTRACTED_CHARS);
+    const csvText = truncated ? raw.slice(0, lastNewline > 0 ? lastNewline : MAX_EXTRACTED_CHARS) : raw;
     const block = buildDatasetBlock({ filename: attachment.filename, mimeType: attachment.mimeType }, csvText, truncated);
     finalContent = content ? `${content}\n\n${block}` : block;
   }
@@ -220,7 +239,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
   // its optimistic bubble was added under with the real one — without this,
   // Edit/Delete/feedback on a message sent this session (never reloaded
   // from the server) would address an id that was never a real row.
-  let persistedUserMessage: { id: string; content: string; created_at: string };
+  let persistedUserMessage: { id: string; content: string; created_at: string; attachment_path?: string | null };
 
   if (!isRetry) {
     const { data: insertedUserMessage, error: userMsgError } = await supabase
@@ -231,6 +250,41 @@ export async function POST(request: Request, { params }: { params: { id: string 
 
     if (userMsgError) return failInternal("messages", userMsgError);
     persistedUserMessage = insertedUserMessage;
+
+    // Keep the original file itself, not just its extracted text, so the
+    // user can get back exactly what they sent later (see
+    // lib/server/storage.ts) — for an image, this is also what makes it
+    // viewable again at all after a reload: the base64 data itself is only
+    // ever sent to Gemini as an inline part for this turn and never added
+    // to `content` (unlike a document/dataset, which embeds extracted
+    // text), so without this, a reloaded conversation showed no trace an
+    // image was ever attached to that message. Never re-uploaded on a
+    // retry: this branch only runs for a genuinely new row. An
+    // `ImageAttachment` has no `filename` (unlike document/dataset) since
+    // the picker never collects one for a photo — synthesized here purely
+    // as a storage key, never shown to the user.
+    if (attachment) {
+      const filename =
+        attachment.kind === "image" ? `image.${attachment.mimeType.split("/")[1] ?? "bin"}` : attachment.filename;
+      const buffer = Buffer.from(attachment.data, "base64");
+      const path = await uploadAttachment(
+        supabase,
+        user.id,
+        `${params.id}/${persistedUserMessage.id}`,
+        filename,
+        buffer,
+        attachment.mimeType
+      );
+      if (path) {
+        const { data: updated } = await supabase
+          .from("messages")
+          .update({ attachment_path: path, attachment_filename: filename, attachment_mime_type: attachment.mimeType })
+          .eq("id", persistedUserMessage.id)
+          .select()
+          .single();
+        if (updated) persistedUserMessage = updated;
+      }
+    }
   } else {
     persistedUserMessage = last;
   }
@@ -283,6 +337,12 @@ export async function POST(request: Request, { params }: { params: { id: string 
   // (see lib/server/project.ts) — null for an ungrouped conversation.
   const projectContext = await getProjectContext(supabase, conversation.project_id ?? null);
 
+  // Past practice-quiz subjects/scores, to calibrate a new quiz's difficulty
+  // (see lib/server/studyProgress.ts) — Student mode only, null otherwise or
+  // if the student hasn't completed a quiz yet.
+  const studyProgressContext =
+    conversation.mode === "student" ? await getStudyProgressContext(supabase, user.id) : null;
+
   // A typed-nothing-but-attached-a-file first message still deserves a
   // real conversation title instead of an empty one.
   const titleSource =
@@ -294,11 +354,37 @@ export async function POST(request: Request, { params }: { params: { id: string 
         : "");
 
   const encoder = new TextEncoder();
+  // The incoming request's own abort signal — fires both when the client
+  // explicitly clicks "Stop generating" (aborting its fetch) and when it
+  // simply disconnects. Passed down to the Gemini call so the upstream
+  // request is actually cancelled instead of running to completion for a
+  // connection nobody is reading anymore, and checked below to decide
+  // whether to still persist whatever text was generated before the stop.
+  const signal = request.signal;
 
   const stream = new ReadableStream({
     async start(controller) {
+      // Once the client is gone, `controller.enqueue()` throws — this
+      // becomes a no-op after that instead of letting that throw escape
+      // (it would otherwise reach the `catch` below and throw again trying
+      // to report the very error it just caused).
+      let clientGone = false;
       function send(event: object) {
-        controller.enqueue(encoder.encode(JSON.stringify(event) + "\n"));
+        if (clientGone) return;
+        try {
+          controller.enqueue(encoder.encode(JSON.stringify(event) + "\n"));
+        } catch {
+          clientGone = true;
+        }
+      }
+      function closeStream() {
+        if (clientGone) return;
+        clientGone = true;
+        try {
+          controller.close();
+        } catch {
+          // Already closed/errored from the client's side — nothing to do.
+        }
       }
 
       // Sent before the AI call so the client can reconcile its optimistic
@@ -313,10 +399,12 @@ export async function POST(request: Request, { params }: { params: { id: string 
           memoryContext: memoryContext ?? undefined,
           customInstructions: customInstructions ?? undefined,
           projectContext: projectContext ?? undefined,
+          studyProgressContext: studyProgressContext ?? undefined,
           webSearch,
           deepResearch,
           codeExecution: hasDataset,
           jobFitAnalysis,
+          signal,
           onSources: (cited) => {
             sources = cited;
           },
@@ -327,18 +415,34 @@ export async function POST(request: Request, { params }: { params: { id: string 
       } catch (err) {
         // The user's message is already saved — the client's retry flow
         // resends the same text, which the dedup check above turns into a
-        // plain retry rather than a duplicate row.
+        // plain retry rather than a duplicate row. (A client-initiated stop
+        // never reaches this branch — streamAIReply ends cleanly on abort
+        // instead of throwing; see lib/server/gemini.ts.)
         send({
           type: "error",
           code: "AI_REQUEST_FAILED",
           message: err instanceof Error ? err.message : "The assistant failed to respond",
         });
-        controller.close();
+        closeStream();
         return;
       }
 
-      const finalReply = sources.length > 0 ? full + buildSearchCitationsBlock(sources) : full;
+      if (!full.trim()) {
+        // Stopped before any text was generated — nothing worth saving as a
+        // reply. The user's question stays saved either way.
+        if (!signal.aborted) {
+          send({ type: "error", code: "INTERNAL_ERROR", message: "The assistant returned an empty response." });
+        }
+        closeStream();
+        return;
+      }
 
+      const finalReply = sources.length > 0 ? full + buildSearchCitationsBlock(sources, deepResearch) : full;
+
+      // Persisted unconditionally — including when the client already
+      // disconnected (a "Stop generating" click, or a dropped connection) —
+      // so a stopped reply is never silently lost. Only ever skipped above
+      // when there's literally no text to save.
       const { data: assistantMessage, error: assistantMsgError } = await supabase
         .from("messages")
         .insert({ conversation_id: params.id, role: "assistant", content: finalReply })
@@ -348,7 +452,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
       if (assistantMsgError) {
         console.error("[messages]", assistantMsgError.message);
         send({ type: "error", code: "INTERNAL_ERROR", message: "Something went wrong. Please try again." });
-        controller.close();
+        closeStream();
         return;
       }
 
@@ -357,8 +461,12 @@ export async function POST(request: Request, { params }: { params: { id: string 
         .update({ title: isFirstMessage ? truncate(titleSource, 38) : conversation.title })
         .eq("id", params.id);
 
+      // A no-op `send` if the client is already gone (stopped/disconnected)
+      // — the persisted row above is what actually matters at that point;
+      // the client reconciles it on its own via a follow-up fetch instead
+      // (see ChatContext's stop-generation handling).
       send({ type: "done", assistantMessage });
-      controller.close();
+      closeStream();
     },
   });
 

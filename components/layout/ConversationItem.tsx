@@ -2,22 +2,27 @@
 
 import { memo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { MoreVertical, Pencil, Trash2 } from "lucide-react";
-import type { Conversation } from "@/lib/types";
+import { FolderInput, FolderMinus, MoreVertical, Pencil, Trash2 } from "lucide-react";
+import type { Conversation, Project } from "@/lib/types";
 import { MODES } from "@/lib/modes";
 import { cn, formatRelativeDay } from "@/lib/utils";
-import { Menu } from "@/components/ui/Menu";
+import { Menu, type MenuItem } from "@/components/ui/Menu";
 
 function ConversationItemImpl({
   conversation,
   active,
   onDelete,
   onRename,
+  projects,
+  onMove,
 }: {
   conversation: Conversation;
   active: boolean;
   onDelete: (id: string) => void;
   onRename: (id: string, title: string) => void;
+  /** When provided, adds a "Move to project" submenu (and "Remove from project" when already grouped). */
+  projects?: Project[];
+  onMove?: (id: string, projectId: string | null) => void;
 }) {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
@@ -92,6 +97,32 @@ function ConversationItemImpl({
         ariaLabel={`Options for "${conversation.title}"`}
         items={[
           { label: "Rename", icon: <Pencil className="h-3.5 w-3.5" aria-hidden />, onClick: () => setEditing(true) },
+          ...(projects && onMove
+            ? [
+                {
+                  label: "Move to project",
+                  icon: <FolderInput className="h-3.5 w-3.5" aria-hidden />,
+                  emptyLabel: "No projects yet",
+                  submenu: projects
+                    .filter((p) => p.id !== conversation.projectId)
+                    .map(
+                      (p): MenuItem => ({
+                        label: p.name,
+                        onClick: () => onMove(conversation.id, p.id),
+                      })
+                    ),
+                } satisfies MenuItem,
+              ]
+            : []),
+          ...(onMove && conversation.projectId
+            ? [
+                {
+                  label: "Remove from project",
+                  icon: <FolderMinus className="h-3.5 w-3.5" aria-hidden />,
+                  onClick: () => onMove(conversation.id, null),
+                } satisfies MenuItem,
+              ]
+            : []),
           { label: "Delete", icon: <Trash2 className="h-3.5 w-3.5" aria-hidden />, onClick: handleDelete, danger: true },
         ]}
       />

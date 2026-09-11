@@ -5,6 +5,7 @@ import { checkRateLimit } from "@/lib/server/rateLimit";
 import { isValidUuid } from "@/lib/server/validation";
 import { extractDocumentText, DocumentExtractionError } from "@/lib/server/documentExtraction";
 import { ALLOWED_DOCUMENT_MIME_TYPES, MAX_DOCUMENT_BYTES } from "@/lib/document";
+import { uploadAttachment } from "@/lib/server/storage";
 
 const MAX_DOCUMENT_BASE64_CHARS = Math.ceil((MAX_DOCUMENT_BYTES * 4) / 3) + 1024;
 const MAX_FILES_PER_PROJECT = 20;
@@ -118,5 +119,28 @@ export async function POST(request: Request, { params }: { params: { id: string 
     .single();
 
   if (error) return failInternal("project-files", error);
+
+  // Keep the original file itself, not just its extracted text — see
+  // lib/server/storage.ts. Best-effort: a failed upload here still leaves a
+  // perfectly usable project file (its extracted text is already saved
+  // above), just without a downloadable original.
+  const path = await uploadAttachment(
+    supabase,
+    user.id,
+    `projects/${params.id}/${fileRow.id}`,
+    filename,
+    Buffer.from(data, "base64"),
+    mimeType
+  );
+  if (path) {
+    const { data: updated } = await supabase
+      .from("project_files")
+      .update({ storage_path: path })
+      .eq("id", fileRow.id)
+      .select()
+      .single();
+    if (updated) return ok(updated, 201);
+  }
+
   return ok(fileRow, 201);
 }

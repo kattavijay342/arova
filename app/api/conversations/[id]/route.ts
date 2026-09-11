@@ -4,9 +4,14 @@ import { getSessionUser } from "@/lib/server/requireUser";
 import { checkRateLimit } from "@/lib/server/rateLimit";
 import { isValidUuid } from "@/lib/server/validation";
 
-const updateConversationSchema = z.object({
-  title: z.string().trim().min(1, "Title cannot be empty").max(100, "Title is too long"),
-});
+const updateConversationSchema = z
+  .object({
+    title: z.string().trim().min(1, "Title cannot be empty").max(100, "Title is too long").optional(),
+    projectId: z.string().uuid().nullable().optional(),
+  })
+  .refine((v) => v.title !== undefined || v.projectId !== undefined, {
+    message: "Nothing to update",
+  });
 
 export async function GET(request: Request, { params }: { params: { id: string } }) {
   const { supabase, user, configError } = await getSessionUser();
@@ -51,9 +56,27 @@ export async function PATCH(request: Request, { params }: { params: { id: string
     return fail(400, "BAD_REQUEST", "Validation failed", parsed.error.issues);
   }
 
+  // Same ownership check as conversation creation: RLS on `conversations`
+  // only verifies the conversation row's own `user_id`, not that a supplied
+  // `project_id` points to a project owned by the same user.
+  if (parsed.data.projectId) {
+    const { data: project, error: projectError } = await supabase
+      .from("projects")
+      .select("id")
+      .eq("id", parsed.data.projectId)
+      .eq("user_id", user.id)
+      .maybeSingle();
+    if (projectError) return failInternal("conversations", projectError);
+    if (!project) return fail(404, "NOT_FOUND", "Project not found");
+  }
+
+  const updates: { title?: string; project_id?: string | null } = {};
+  if (parsed.data.title !== undefined) updates.title = parsed.data.title;
+  if (parsed.data.projectId !== undefined) updates.project_id = parsed.data.projectId;
+
   const { data, error } = await supabase
     .from("conversations")
-    .update({ title: parsed.data.title })
+    .update(updates)
     .eq("id", params.id)
     .eq("user_id", user.id)
     .select()

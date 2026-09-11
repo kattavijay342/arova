@@ -300,6 +300,15 @@ create policy "Users can delete their own memories"
   on public.user_memories for delete
   using (auth.uid() = user_id);
 
+-- Added for Phase 12 (Memory): editing a saved memory in place. The table
+-- previously had no update policy, so PATCH /api/memories/[id] would have
+-- been silently blocked by RLS even with a correct route in front of it —
+-- the same class of gap messages.update had before Phase 1's fix.
+drop policy if exists "Users can update their own memories" on public.user_memories;
+create policy "Users can update their own memories"
+  on public.user_memories for update
+  using (auth.uid() = user_id);
+
 -- ─────────────────────────────────────────────
 -- Projects (Phase 7): a mode-agnostic container that groups conversations
 -- together, with its own custom instructions and reference files — both
@@ -409,3 +418,63 @@ create policy "Users can delete files in their own projects"
 -- ─────────────────────────────────────────────
 alter table public.profiles add column if not exists custom_instructions_about text not null default '' check (char_length(custom_instructions_about) <= 1500);
 alter table public.profiles add column if not exists custom_instructions_style text not null default '' check (char_length(custom_instructions_style) <= 1500);
+
+-- ─────────────────────────────────────────────
+-- File attachments (Phase 6: Files & Documents) — persists the *original*
+-- uploaded document/dataset bytes in Supabase Storage, not just their
+-- extracted text. Before this, a document/CSV attachment's extracted text
+-- was embedded in `messages.content` (or `project_files.extracted_text`)
+-- and the original file was discarded right after extraction — a user
+-- could see what the AI read from their file but never get the original
+-- file itself back. Image attachments are deliberately excluded (see
+-- lib/types.ts's ImageAttachment comment) — they're multimodal input for
+-- the turn they're sent in, never persisted at all, and that design is
+-- unchanged here.
+--
+-- One private bucket, folder-scoped per user (`<user_id>/...`) so the
+-- existing Supabase Storage folder-ownership RLS pattern applies directly:
+-- `storage.foldername(name)` splits the object's path on "/", and its
+-- first segment must equal the caller's own auth.uid(). Never a public
+-- bucket — every read/write is gated by these policies, and the app never
+-- exposes the bucket's own URL scheme, only short-lived signed URLs
+-- generated server-side after re-checking ownership of the owning
+-- message/project file row (see app/api/messages/[id]/attachment/route.ts
+-- and app/api/projects/[id]/files/[fileId]/attachment/route.ts).
+-- ─────────────────────────────────────────────
+insert into storage.buckets (id, name, public)
+values ('attachments', 'attachments', false)
+on conflict (id) do nothing;
+
+drop policy if exists "Users can upload their own attachments" on storage.objects;
+create policy "Users can upload their own attachments"
+  on storage.objects for insert
+  with check (
+    bucket_id = 'attachments'
+    and (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+drop policy if exists "Users can view their own attachments" on storage.objects;
+create policy "Users can view their own attachments"
+  on storage.objects for select
+  using (
+    bucket_id = 'attachments'
+    and (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+drop policy if exists "Users can delete their own attachments" on storage.objects;
+create policy "Users can delete their own attachments"
+  on storage.objects for delete
+  using (
+    bucket_id = 'attachments'
+    and (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+-- Nullable — only set going forward for a document/dataset message; a
+-- message with no attachment, an image attachment, or one sent before this
+-- feature shipped simply has all three columns null, which every reader
+-- already treats as "no downloadable original" rather than an error.
+alter table public.messages add column if not exists attachment_path text;
+alter table public.messages add column if not exists attachment_filename text;
+alter table public.messages add column if not exists attachment_mime_type text;
+
+alter table public.project_files add column if not exists storage_path text;

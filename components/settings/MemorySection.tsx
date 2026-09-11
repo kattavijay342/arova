@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState, type FormEvent } from "react";
-import { Brain, Loader2, Plus, Trash2 } from "lucide-react";
+import { useEffect, useState, type FormEvent, type KeyboardEvent } from "react";
+import { Brain, Check, Loader2, Pencil, Plus, Trash2, X } from "lucide-react";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { useAuth } from "@/lib/context/AuthContext";
@@ -39,6 +39,9 @@ export function MemorySection() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState("");
+  const [savingEdit, setSavingEdit] = useState(false);
 
   const memoryEnabled = user?.memoryEnabled ?? true;
   const disabled = Boolean(user?.isGuest);
@@ -95,6 +98,49 @@ export function MemorySection() {
     }
   }
 
+  function startEdit(memory: UserMemory) {
+    setEditingId(memory.id);
+    setEditDraft(memory.content);
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+    setEditDraft("");
+  }
+
+  async function commitEdit(id: string) {
+    const trimmed = editDraft.trim();
+    const original = memories?.find((m) => m.id === id)?.content;
+    if (!trimmed || savingEdit) return;
+    if (trimmed === original) {
+      cancelEdit();
+      return;
+    }
+    setSavingEdit(true);
+    setError(null);
+    try {
+      const row = await apiFetch<RawMemory>(`/api/memories/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ content: trimmed }),
+      });
+      setMemories((prev) => (prev ?? []).map((m) => (m.id === id ? mapMemory(row) : m)));
+      cancelEdit();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save that edit. Please try again.");
+    } finally {
+      setSavingEdit(false);
+    }
+  }
+
+  function handleEditKeyDown(e: KeyboardEvent<HTMLInputElement>, id: string) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      void commitEdit(id);
+    } else if (e.key === "Escape") {
+      cancelEdit();
+    }
+  }
+
   return (
     <Card className="p-6">
       <h2 className="font-display text-lg font-semibold text-text">Memory</h2>
@@ -120,7 +166,7 @@ export function MemorySection() {
           role="switch"
           aria-checked={memoryEnabled}
           aria-label="Use memory"
-          onClick={() => updateProfile({ memoryEnabled: !memoryEnabled })}
+          onClick={() => void updateProfile({ memoryEnabled: !memoryEnabled })}
           disabled={disabled}
           className={cn(
             "relative h-6 w-11 flex-none rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50",
@@ -164,26 +210,68 @@ export function MemorySection() {
         ) : memories.length === 0 ? (
           <p className="text-[15px] text-faint">Nothing saved yet.</p>
         ) : (
-          memories.map((m) => (
-            <div
-              key={m.id}
-              className="flex items-start justify-between gap-3 rounded-lg border border-border-soft px-3.5 py-2.5"
-            >
-              <p className="text-[15px] text-text">{m.content}</p>
-              <button
-                onClick={() => handleDelete(m.id)}
-                disabled={deletingId === m.id}
-                aria-label={`Delete memory: ${m.content}`}
-                className="flex-none text-faint hover:text-danger disabled:opacity-50"
+          memories.map((m) =>
+            editingId === m.id ? (
+              <div
+                key={m.id}
+                className="flex items-center gap-2 rounded-lg border border-brand px-3.5 py-2.5"
               >
-                {deletingId === m.id ? (
-                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-                ) : (
-                  <Trash2 className="h-4 w-4" aria-hidden />
-                )}
-              </button>
-            </div>
-          ))
+                <input
+                  autoFocus
+                  value={editDraft}
+                  onChange={(e) => setEditDraft(e.target.value)}
+                  onKeyDown={(e) => handleEditKeyDown(e, m.id)}
+                  maxLength={500}
+                  aria-label="Edit memory"
+                  className="w-full min-w-0 flex-1 bg-transparent text-[15px] text-text focus:outline-none"
+                />
+                <button
+                  onClick={() => commitEdit(m.id)}
+                  disabled={savingEdit || !editDraft.trim()}
+                  aria-label="Save edit"
+                  className="flex-none text-faint hover:text-general disabled:opacity-50"
+                >
+                  {savingEdit ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Check className="h-4 w-4" aria-hidden />}
+                </button>
+                <button
+                  onClick={cancelEdit}
+                  disabled={savingEdit}
+                  aria-label="Cancel edit"
+                  className="flex-none text-faint hover:text-text disabled:opacity-50"
+                >
+                  <X className="h-4 w-4" aria-hidden />
+                </button>
+              </div>
+            ) : (
+              <div
+                key={m.id}
+                className="group flex items-start justify-between gap-3 rounded-lg border border-border-soft px-3.5 py-2.5"
+              >
+                <p className="text-[15px] text-text">{m.content}</p>
+                <div className="flex flex-none items-center gap-2">
+                  <button
+                    onClick={() => startEdit(m)}
+                    aria-label={`Edit memory: ${m.content}`}
+                    className="text-faint opacity-0 hover:text-text group-hover:opacity-100"
+                  >
+                    <Pencil className="h-4 w-4" aria-hidden />
+                  </button>
+                  <button
+                    onClick={() => handleDelete(m.id)}
+                    disabled={deletingId === m.id}
+                    aria-label={`Delete memory: ${m.content}`}
+                    className="text-faint hover:text-danger disabled:opacity-50"
+                  >
+                    {deletingId === m.id ? (
+                      <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                    ) : (
+                      <Trash2 className="h-4 w-4" aria-hidden />
+                    )}
+                  </button>
+                </div>
+              </div>
+            )
+          )
         )}
       </div>
     </Card>

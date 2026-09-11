@@ -38,13 +38,37 @@ function base64ToUtf8(b64: string): string {
 
 const GENERATED_IMAGE_RE = /\[\[generated-image:([A-Za-z0-9+/=]+)\]\]\n([\s\S]*?)\n\[\[\/generated-image\]\]/;
 
-/** Embeds a generated image into a message's persisted `content`. */
-export function buildGeneratedImageBlock(meta: GeneratedImageMeta, base64ImageData: string): string {
+/**
+ * Embeds a generated image's *metadata* into a message's persisted
+ * `content`. `base64ImageData` is optional: the /images route only passes
+ * it when the actual bytes couldn't be kept in Storage (see
+ * lib/server/storage.ts) — a fallback so the image is never silently lost
+ * if the bucket isn't set up yet, matching how a document/dataset upload
+ * degrades gracefully. When Storage succeeds (the normal case going
+ * forward), the body is left empty and the real bytes live in Storage,
+ * referenced by the message's own `attachment_path` — the same columns a
+ * user-uploaded attachment uses (see supabase/schema.sql's Phase 6 block) —
+ * since a given row is either a user upload or a generated image, never
+ * both, reusing them needs no schema change.
+ *
+ * Storing the full image inline used to be the *only* way this worked, so
+ * every already-generated image in the database has real bytes in this
+ * body — parseGeneratedImageMessage below reads either shape from the same
+ * regex; an empty body just means "fetch it from Storage instead" (see
+ * GeneratedImageCard).
+ */
+export function buildGeneratedImageBlock(meta: GeneratedImageMeta, base64ImageData?: string): string {
   const encodedMeta = utf8ToBase64(JSON.stringify(meta));
-  return `[[generated-image:${encodedMeta}]]\n${base64ImageData}\n[[/generated-image]]`;
+  return `[[generated-image:${encodedMeta}]]\n${base64ImageData ?? ""}\n[[/generated-image]]`;
 }
 
-/** Reconstructs the prompt/mimeType/image bytes from a persisted message's content, or null if it never had a generated image. */
+/**
+ * Reconstructs the prompt/mimeType/image bytes from a persisted message's
+ * content, or null if it never had a generated image. `data` is an empty
+ * string for a Storage-backed image (see buildGeneratedImageBlock) — the
+ * caller (GeneratedImageCard) treats that as "fetch it from Storage via
+ * this message's id" rather than as a real empty image.
+ */
 export function parseGeneratedImageMessage(content: string): ParsedGeneratedImage | null {
   const match = content.match(GENERATED_IMAGE_RE);
   if (!match || match.index === undefined) return null;

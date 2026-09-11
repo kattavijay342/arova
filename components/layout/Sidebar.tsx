@@ -26,6 +26,11 @@ import { Avatar } from "@/components/ui/Avatar";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { cn, getDateGroup, type DateGroup } from "@/lib/utils";
 import { readStorage, writeStorage } from "@/lib/storage";
+import type { Conversation } from "@/lib/types";
+
+// How long to wait after the user stops typing before hitting the search
+// API — avoids firing a request per keystroke.
+const SEARCH_DEBOUNCE_MS = 300;
 
 // Shared by every icon-only button in the collapsed rail so focus is always
 // visible for keyboard users (mirrors components/chat/MessageInput.tsx's
@@ -38,7 +43,14 @@ const DATE_GROUPS: DateGroup[] = ["Today", "Yesterday", "Earlier"];
 const COLLAPSE_KEY = "ask-meta-ai:sidebar-collapsed";
 
 export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const { conversations, deleteConversation, renameConversation, refreshConversations } = useChat();
+  const {
+    conversations,
+    deleteConversation,
+    renameConversation,
+    moveConversationToProject,
+    refreshConversations,
+    searchConversations,
+  } = useChat();
   const { projects, createProject, renameProject, deleteProject } = useProjects();
   const { user, signOut } = useAuth();
   const router = useRouter();
@@ -60,18 +72,54 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
   // instead — excluded here so they don't appear in both places.
   const ungroupedConversations = useMemo(() => conversations.filter((c) => !c.projectId), [conversations]);
 
-  // Titles and message contents were already fetched up front for every
-  // conversation (see ChatContext's hydrate), so this filters entirely
-  // client-side — no extra request, no new dependency for fuzzy matching.
-  // Scoped to ungrouped conversations only — searching inside projects too
-  // is a reasonable future enhancement, not part of this pass.
-  const filteredConversations = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
-    if (!q) return ungroupedConversations;
-    return ungroupedConversations.filter(
-      (c) => c.title.toLowerCase().includes(q) || c.messages.some((m) => m.content.toLowerCase().includes(q))
-    );
-  }, [ungroupedConversations, searchQuery]);
+  // Conversation messages are no longer loaded up front (see
+  // Conversation.messagesLoaded / lib/context/ChatContext.tsx), so content
+  // search can't filter client-side anymore — it hits the server's `?q=`
+  // search instead, which covers both titles and message content. Debounced
+  // so it fires once typing pauses rather than per keystroke, and guarded
+  // against out-of-order responses with a request counter.
+  const [searchResults, setSearchResults] = useState<Conversation[] | null>(null);
+  const [searchedQuery, setSearchedQuery] = useState<string | null>(null);
+  const [searching, setSearching] = useState(false);
+  const searchRequestIdRef = useRef(0);
+
+  useEffect(() => {
+    const q = searchQuery.trim();
+    if (!q) {
+      searchRequestIdRef.current++;
+      setSearchResults(null);
+      setSearchedQuery(null);
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    const requestId = ++searchRequestIdRef.current;
+    const timer = setTimeout(async () => {
+      try {
+        const results = await searchConversations(q);
+        if (searchRequestIdRef.current === requestId) {
+          setSearchResults(results);
+          setSearchedQuery(q);
+        }
+      } catch (err) {
+        console.error("[sidebar] search failed:", err);
+        if (searchRequestIdRef.current === requestId) {
+          setSearchResults([]);
+          setSearchedQuery(q);
+        }
+      } finally {
+        if (searchRequestIdRef.current === requestId) setSearching(false);
+      }
+    }, SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [searchQuery, searchConversations]);
+
+  const trimmedQuery = searchQuery.trim();
+  // True until the debounced search has actually resolved for the query
+  // currently in the box — used to avoid flashing stale results from a
+  // previous query while the new one is still in flight.
+  const isSearchPending = trimmedQuery !== "" && (searching || searchedQuery !== trimmedQuery);
+  const filteredConversations = trimmedQuery === "" ? ungroupedConversations : searchResults ?? [];
 
   async function handleCreateProject() {
     const name = newProjectName.trim();
@@ -247,8 +295,10 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
         <div className={cn("mt-4 flex-1 overflow-y-auto px-3 pb-3", collapsed && "md:hidden")}>
           {ungroupedConversations.length === 0 ? (
             <p className="px-2.5 pb-1 text-[13px] text-faint">No conversations yet</p>
+          ) : isSearchPending ? (
+            <p className="px-2.5 pb-1 text-[13px] text-faint">Searching…</p>
           ) : filteredConversations.length === 0 ? (
-            <p className="px-2.5 pb-1 text-[13px] text-faint">No conversations match &ldquo;{searchQuery.trim()}&rdquo;</p>
+            <p className="px-2.5 pb-1 text-[13px] text-faint">No conversations match &ldquo;{trimmedQuery}&rdquo;</p>
           ) : (
             DATE_GROUPS.map((group) => {
               const groupConversations = filteredConversations
@@ -268,6 +318,8 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
                         active={c.id === activeId}
                         onDelete={deleteConversation}
                         onRename={renameConversation}
+                        projects={projects}
+                        onMove={moveConversationToProject}
                       />
                     ))}
                   </div>

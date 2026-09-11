@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/Button";
 import { useAuth } from "@/lib/context/AuthContext";
 
 const MAX_LENGTH = 1500;
+const SAVE_ERROR_MESSAGE = "Could not save your changes. Please try again.";
 
 /**
  * Global custom instructions — "what should Arova know about you" / "how
@@ -19,17 +20,37 @@ export function PersonalizationSection() {
   const { user, updateProfile } = useAuth();
   const [about, setAbout] = useState(user?.customInstructionsAbout ?? "");
   const [style, setStyle] = useState(user?.customInstructionsStyle ?? "");
+  const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const disabled = Boolean(user?.isGuest);
-  const unchanged = about === (user?.customInstructionsAbout ?? "") && style === (user?.customInstructionsStyle ?? "");
+  // Compared against the *trimmed* draft — otherwise saving " some text "
+  // leaves the Save button permanently re-enabled afterward: the stored
+  // value comes back trimmed, but the untrimmed draft here never would,
+  // making a successful save look unsaved again for the rest of the session.
+  const trimmedAbout = about.trim();
+  const trimmedStyle = style.trim();
+  const unchanged =
+    trimmedAbout === (user?.customInstructionsAbout ?? "") && trimmedStyle === (user?.customInstructionsStyle ?? "");
 
-  function handleSubmit(e: FormEvent) {
+  async function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    if (unchanged) return;
-    updateProfile({ customInstructionsAbout: about.trim(), customInstructionsStyle: style.trim() });
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+    if (unchanged || saving) return;
+    setSaving(true);
+    setError(null);
+    const ok = await updateProfile({ customInstructionsAbout: trimmedAbout, customInstructionsStyle: trimmedStyle });
+    setSaving(false);
+    if (ok) {
+      // Reflect exactly what was persisted, not the untrimmed draft — see
+      // the `unchanged` comment above.
+      setAbout(trimmedAbout);
+      setStyle(trimmedStyle);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } else {
+      setError(SAVE_ERROR_MESSAGE);
+    }
   }
 
   return (
@@ -82,13 +103,18 @@ export function PersonalizationSection() {
 
         {!disabled && (
           <div className="flex items-center gap-3">
-            <Button type="submit" disabled={unchanged}>
+            <Button type="submit" disabled={unchanged || saving} loading={saving}>
               Save changes
             </Button>
             {saved && (
               <span className="flex items-center gap-1 text-sm font-medium text-general">
                 <Check className="h-4 w-4" aria-hidden />
                 Saved
+              </span>
+            )}
+            {error && (
+              <span role="alert" className="text-sm text-danger">
+                {error}
               </span>
             )}
           </div>

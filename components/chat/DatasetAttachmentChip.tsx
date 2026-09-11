@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, ChevronUp, Table2 } from "lucide-react";
+import { ChevronDown, ChevronUp, Download, Loader2, Table2 } from "lucide-react";
 import type { DatasetAttachmentMeta } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -11,24 +11,46 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+type DownloadState = "idle" | "downloading" | "error";
+
 /**
  * The file chip shown on a user message that had a dataset (CSV) attached —
  * mirrors DocumentAttachmentChip, with a row count instead of a character
- * count. `csvText`, when provided (i.e. after a reload, once the persisted
- * `[[dataset: ...]]` marker has been parsed), can be expanded so the user
- * can verify exactly what the AI is analyzing.
+ * count and the same "Download original" support (see that component's
+ * doc comment).
  */
 export function DatasetAttachmentChip({
   meta,
   csvText,
+  messageId,
+  hasFileAttachment,
   onLight,
 }: {
   meta: DatasetAttachmentMeta;
   csvText?: string;
+  messageId?: string;
+  hasFileAttachment?: boolean;
   /** True when rendered on the brand-colored user bubble, so text stays readable against it. */
   onLight?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [downloadState, setDownloadState] = useState<DownloadState>("idle");
+
+  async function handleDownload() {
+    if (!messageId || downloadState === "downloading") return;
+    setDownloadState("downloading");
+    try {
+      const res = await fetch(`/api/messages/${messageId}/attachment`);
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.success) throw new Error(json?.error?.message ?? "Could not download this file.");
+      window.open(json.data.url, "_blank", "noopener,noreferrer");
+      setDownloadState("idle");
+    } catch (err) {
+      console.error("[attachment] download failed:", err);
+      setDownloadState("error");
+      setTimeout(() => setDownloadState("idle"), 3000);
+    }
+  }
 
   const sizeLabel =
     meta.rowCount !== undefined
@@ -51,6 +73,21 @@ export function DatasetAttachmentChip({
           Dataset
           {sizeLabel ? ` · ${sizeLabel}` : ""}
         </span>
+        {hasFileAttachment && messageId && (
+          <button
+            onClick={handleDownload}
+            disabled={downloadState === "downloading"}
+            aria-label="Download original file"
+            title="Download original file"
+            className={cn("flex-none rounded p-0.5", onLight ? "hover:bg-white/10" : "hover:bg-border-soft")}
+          >
+            {downloadState === "downloading" ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+            ) : (
+              <Download className="h-3.5 w-3.5" aria-hidden />
+            )}
+          </button>
+        )}
         {csvText && (
           <button
             onClick={() => setExpanded((v) => !v)}
@@ -62,6 +99,11 @@ export function DatasetAttachmentChip({
           </button>
         )}
       </div>
+      {downloadState === "error" && (
+        <p className={cn("text-[12px]", onLight ? "text-white/80" : "text-danger")}>
+          Couldn&apos;t download this file. Please try again.
+        </p>
+      )}
       {expanded && csvText && (
         <pre
           className={cn(

@@ -104,6 +104,11 @@ export interface Message {
   documentMeta?: DocumentAttachmentMeta;
   // Same idea as documentMeta, for a dataset (CSV) attachment (see lib/dataset.ts).
   datasetMeta?: DatasetAttachmentMeta;
+  // True when this message's original document/dataset upload was kept in
+  // Storage and can be downloaded again (see lib/server/storage.ts) — false
+  // (or absent) for a message with no attachment, an image attachment
+  // (never persisted, by design), or one sent before this existed.
+  hasFileAttachment?: boolean;
 }
 
 export interface UsageStats {
@@ -123,6 +128,12 @@ export interface Conversation {
   // Optional — a conversation with no project keeps working exactly as
   // before. See lib/context/ProjectContext.tsx.
   projectId?: string | null;
+  // False for a conversation hydrated from the lightweight conversation-list
+  // endpoint (messages: [] there means "not fetched yet", not "empty") —
+  // true once its real messages have been fetched (a brand-new conversation
+  // is also created with this true, since an empty message list for it is
+  // already accurate). See lib/context/ChatContext.tsx.
+  messagesLoaded: boolean;
 }
 
 export type ChatStatus = "idle" | "loading" | "error";
@@ -145,4 +156,7 @@ export interface ProjectFile {
   charCount: number;
   truncated: boolean;
   createdAt: string;
+  // Same idea as Message.hasFileAttachment — true when the original upload
+  // was kept in Storage and can be downloaded again.
+  hasFileAttachment?: boolean;
 }

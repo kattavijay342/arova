@@ -54,15 +54,30 @@ interface MessageInputProps {
     attachment?: MessageAttachment | null,
     webSearch?: boolean,
     deepResearch?: boolean,
-    jobFitAnalysis?: boolean
+    jobFitAnalysis?: boolean,
+    /** True when voice input contributed to this message — lets the caller decide to auto-speak the reply once it arrives (see the chat page). */
+    wasVoiceComposed?: boolean
   ) => void;
   onGenerateImage: (prompt: string) => void;
   mode: Mode;
   disabled?: boolean;
+  /** True for the whole duration of a streaming reply — swaps the Send button for a Stop button. */
+  isStreaming?: boolean;
+  onStop?: () => void;
   placeholder?: string;
 }
 
-export function MessageInput({ value, onChange, onSend, onGenerateImage, mode, disabled, placeholder }: MessageInputProps) {
+export function MessageInput({
+  value,
+  onChange,
+  onSend,
+  onGenerateImage,
+  mode,
+  disabled,
+  isStreaming,
+  onStop,
+  placeholder,
+}: MessageInputProps) {
   const modeConfig = MODES[mode];
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -78,6 +93,11 @@ export function MessageInput({ value, onChange, onSend, onGenerateImage, mode, d
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const baseValueRef = useRef("");
+  // True once voice input has actually transcribed something into the
+  // current draft — reset on send (see handleSend) — so the caller can
+  // auto-speak the reply once it arrives. Deliberately not set just from
+  // clicking the mic: a click that captured no speech shouldn't count.
+  const wasVoiceComposedRef = useRef(false);
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
 
@@ -125,6 +145,7 @@ export function MessageInput({ value, onChange, onSend, onGenerateImage, mode, d
       }
       const base = baseValueRef.current;
       const spoken = (finalTranscript + interim).trim();
+      if (spoken) wasVoiceComposedRef.current = true;
       onChangeRef.current(spoken ? `${base}${base ? " " : ""}${spoken}` : base);
     };
     recognition.onerror = (event) => {
@@ -193,9 +214,11 @@ export function MessageInput({ value, onChange, onSend, onGenerateImage, mode, d
       : null;
 
     const text = value;
+    const wasVoiceComposed = wasVoiceComposedRef.current;
+    wasVoiceComposedRef.current = false;
     setAttachedFile(null);
     setAttachError(null);
-    onSend(text, attachment, webSearch, deepResearch, jobFitAnalysis);
+    onSend(text, attachment, webSearch, deepResearch, jobFitAnalysis, wasVoiceComposed);
   }
 
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
@@ -498,25 +521,39 @@ export function MessageInput({ value, onChange, onSend, onGenerateImage, mode, d
                 <Mic className="h-[18px] w-[18px]" aria-hidden />
               )}
             </button>
-            <button
-              onClick={handleSend}
-              disabled={!canSend}
-              aria-label={disabled ? "Sending…" : imageMode ? "Generate image" : "Send message"}
-              aria-busy={disabled}
-              className={cn(
-                "flex h-9 w-9 flex-none items-center justify-center rounded-full transition-all duration-150",
-                canSend
-                  ? "bg-brand text-white hover:scale-105 hover:opacity-90 active:scale-95"
-                  : "bg-border-soft text-faint",
-                TOOL_BUTTON_FOCUS
-              )}
-            >
-              {disabled ? (
-                <Loader2 className="h-[18px] w-[18px] animate-spin" aria-hidden />
-              ) : (
-                <Send className="h-[18px] w-[18px]" aria-hidden />
-              )}
-            </button>
+            {isStreaming ? (
+              <button
+                type="button"
+                onClick={onStop}
+                aria-label="Stop generating"
+                className={cn(
+                  "flex h-9 w-9 flex-none items-center justify-center rounded-full bg-brand text-white transition-all duration-150 hover:opacity-90 active:scale-95",
+                  TOOL_BUTTON_FOCUS
+                )}
+              >
+                <Square className="h-3.5 w-3.5 fill-current" aria-hidden />
+              </button>
+            ) : (
+              <button
+                onClick={handleSend}
+                disabled={!canSend}
+                aria-label={disabled ? "Sending…" : imageMode ? "Generate image" : "Send message"}
+                aria-busy={disabled}
+                className={cn(
+                  "flex h-9 w-9 flex-none items-center justify-center rounded-full transition-all duration-150",
+                  canSend
+                    ? "bg-brand text-white hover:scale-105 hover:opacity-90 active:scale-95"
+                    : "bg-border-soft text-faint",
+                  TOOL_BUTTON_FOCUS
+                )}
+              >
+                {disabled ? (
+                  <Loader2 className="h-[18px] w-[18px] animate-spin" aria-hidden />
+                ) : (
+                  <Send className="h-[18px] w-[18px]" aria-hidden />
+                )}
+              </button>
+            )}
           </div>
         </div>
       </div>

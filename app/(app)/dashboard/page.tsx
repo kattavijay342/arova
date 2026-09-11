@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { PlayCircle, GraduationCap, Sparkles } from "lucide-react";
@@ -9,12 +10,55 @@ import { MODE_LIST, MODES } from "@/lib/modes";
 import { getInterviewState } from "@/lib/interview";
 import { ModeCard } from "@/components/dashboard/ModeCard";
 import { RecentConversations } from "@/components/dashboard/RecentConversations";
+import { CareerProgressSummary } from "@/components/dashboard/CareerProgressSummary";
+import { StudyProgressSummary } from "@/components/dashboard/StudyProgressSummary";
 import { HeroIllustration } from "@/components/dashboard/HeroIllustration";
+
+// Bounded to the most recently updated conversations rather than a user's
+// entire history — a student can accumulate far more Student mode
+// conversations over time than a Career mode user accumulates interviews,
+// so this mirrors the same bound lib/server/studyProgress.ts uses
+// server-side for the adaptive quiz-history context.
+const MAX_RECENT_STUDENT_CONVERSATIONS = 15;
 
 export default function DashboardPage() {
   const router = useRouter();
   const { user } = useAuth();
-  const { conversations, createConversation } = useChat();
+  const { conversations, createConversation, ensureMessagesLoaded } = useChat();
+
+  const careerConversationIds = conversations
+    .filter((c) => c.mode === "career")
+    .map((c) => c.id)
+    .join(",");
+
+  // The "Continue your interview" banner needs real messages to detect an
+  // in-progress interview, but the conversation list is hydrated lightweight
+  // (see Conversation.messagesLoaded). Scoped to career-mode conversations
+  // only, so this doesn't reintroduce the "every conversation's full history
+  // on every page load" cost that was split out (see
+  // lib/context/ChatContext.tsx / app/api/conversations/route.ts).
+  useEffect(() => {
+    for (const id of careerConversationIds ? careerConversationIds.split(",") : []) {
+      void ensureMessagesLoaded(id);
+    }
+  }, [careerConversationIds, ensureMessagesLoaded]);
+
+  const recentStudentConversationIds = [...conversations]
+    .filter((c) => c.mode === "student")
+    .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1))
+    .slice(0, MAX_RECENT_STUDENT_CONVERSATIONS)
+    .map((c) => c.id)
+    .join(",");
+
+  // Same idea as the career-mode effect above, for the Student mode "Study
+  // progress" section — bounded to the most recent conversations (see the
+  // constant above) rather than every one, since Student mode conversations
+  // tend to be far more numerous.
+  useEffect(() => {
+    for (const id of recentStudentConversationIds ? recentStudentConversationIds.split(",") : []) {
+      void ensureMessagesLoaded(id);
+    }
+  }, [recentStudentConversationIds, ensureMessagesLoaded]);
 
   const inProgress = conversations
     .filter((c) => c.mode === "career")
@@ -81,6 +125,9 @@ export default function DashboardPage() {
         <h2 className="mb-3 font-display text-lg font-semibold text-text">Recent conversations</h2>
         <RecentConversations />
       </div>
+
+      <CareerProgressSummary conversations={conversations} />
+      <StudyProgressSummary conversations={conversations} />
     </div>
   );
 }

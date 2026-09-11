@@ -8,6 +8,26 @@
  * rather than assume it's always available.
  */
 
+import { parseSearchCitationsMessage } from "./searchCitations";
+
+/**
+ * Reduces a persisted assistant message to what's actually worth reading
+ * aloud for auto-speak-after-voice-input (see the chat page's
+ * autoSpeakNextReply effect) — strips a search-grounded reply's appended
+ * "Sources" block (raw URLs read aloud would be useless noise) before
+ * handing off to stripMarkdownForSpeech, which already turns a generated
+ * image's markdown into just its caption. Deliberately not attempting to
+ * reconstruct the structured cards (interview results, quiz results,
+ * job-fit analysis) MessageBubble renders for those message types — voice
+ * input triggering one of those multi-turn flows is a rare, secondary case
+ * not worth the extra parsing surface right now; it still reads *something*
+ * reasonable, just not as polished.
+ */
+export function getSpeakableReplyText(content: string): string {
+  const citations = parseSearchCitationsMessage(content);
+  return stripMarkdownForSpeech(citations?.content ?? content);
+}
+
 export function getSpeechRecognitionConstructor(): (new () => SpeechRecognition) | null {
   if (typeof window === "undefined") return null;
   return window.SpeechRecognition ?? window.webkitSpeechRecognition ?? null;
@@ -81,6 +101,16 @@ export function speak(text: string, onSpeakingChange: (speaking: boolean) => voi
   if (!isSpeechSynthesisSupported() || !text.trim()) return;
 
   const utterance = new SpeechSynthesisUtterance(text);
+  // Without this, SpeechSynthesis falls back to whatever its own default
+  // voice is (commonly, but not reliably, an English one) regardless of the
+  // reply's actual language — the same mismatch SpeechRecognition would
+  // have if it didn't already set `recognition.lang` (see
+  // components/chat/MessageInput.tsx). Matching the browser's own language
+  // setting is the same reasonable default used there, so a reply in the
+  // user's own language (e.g. Telugu) is read with a matching voice/accent
+  // when the browser has one installed, instead of always defaulting to
+  // English pronunciation.
+  utterance.lang = typeof navigator !== "undefined" ? navigator.language : "en-US";
   const stop = () => {
     if (active?.utterance === utterance) active = null;
     onSpeakingChange(false);

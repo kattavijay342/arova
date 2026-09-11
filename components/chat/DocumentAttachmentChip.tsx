@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, ChevronUp, FileText } from "lucide-react";
+import { ChevronDown, ChevronUp, Download, FileText, Loader2 } from "lucide-react";
 import { documentTypeLabel } from "@/lib/document";
 import type { DocumentAttachmentMeta } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -12,24 +12,50 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+type DownloadState = "idle" | "downloading" | "error";
+
 /**
  * The file chip shown on a user message that had a document attached —
  * never the raw extracted text dumped into the bubble. `extractedText`, when
  * provided (i.e. after a reload, once the persisted `[[document: ...]]`
  * marker has been parsed), can be expanded so the user can verify exactly
- * what the AI read from their file.
+ * what the AI read from their file. `messageId` + `hasFileAttachment` add a
+ * "Download original" button when the real uploaded file was kept in
+ * Storage (see lib/server/storage.ts) — absent for a message sent before
+ * that existed, so this degrades to just the extracted-text view for those.
  */
 export function DocumentAttachmentChip({
   meta,
   extractedText,
+  messageId,
+  hasFileAttachment,
   onLight,
 }: {
   meta: DocumentAttachmentMeta;
   extractedText?: string;
+  messageId?: string;
+  hasFileAttachment?: boolean;
   /** True when rendered on the brand-colored user bubble, so text stays readable against it. */
   onLight?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [downloadState, setDownloadState] = useState<DownloadState>("idle");
+
+  async function handleDownload() {
+    if (!messageId || downloadState === "downloading") return;
+    setDownloadState("downloading");
+    try {
+      const res = await fetch(`/api/messages/${messageId}/attachment`);
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.success) throw new Error(json?.error?.message ?? "Could not download this file.");
+      window.open(json.data.url, "_blank", "noopener,noreferrer");
+      setDownloadState("idle");
+    } catch (err) {
+      console.error("[attachment] download failed:", err);
+      setDownloadState("error");
+      setTimeout(() => setDownloadState("idle"), 3000);
+    }
+  }
 
   const sizeLabel =
     meta.charCount !== undefined
@@ -52,6 +78,21 @@ export function DocumentAttachmentChip({
           {documentTypeLabel(meta.mimeType)}
           {sizeLabel ? ` · ${sizeLabel}` : ""}
         </span>
+        {hasFileAttachment && messageId && (
+          <button
+            onClick={handleDownload}
+            disabled={downloadState === "downloading"}
+            aria-label="Download original file"
+            title="Download original file"
+            className={cn("flex-none rounded p-0.5", onLight ? "hover:bg-white/10" : "hover:bg-border-soft")}
+          >
+            {downloadState === "downloading" ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+            ) : (
+              <Download className="h-3.5 w-3.5" aria-hidden />
+            )}
+          </button>
+        )}
         {extractedText && (
           <button
             onClick={() => setExpanded((v) => !v)}
@@ -63,6 +104,11 @@ export function DocumentAttachmentChip({
           </button>
         )}
       </div>
+      {downloadState === "error" && (
+        <p className={cn("text-[12px]", onLight ? "text-white/80" : "text-danger")}>
+          Couldn&apos;t download this file. Please try again.
+        </p>
+      )}
       {expanded && extractedText && (
         <pre
           className={cn(
