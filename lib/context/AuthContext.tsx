@@ -25,7 +25,11 @@ interface AuthContextValue {
   signUp: (name: string, email: string, password: string) => Promise<AuthResult>;
   continueAsGuest: () => Promise<AuthResult>;
   signOut: () => void;
-  updateProfile: (updates: Partial<Pick<User, "name" | "email">>) => void;
+  updateProfile: (
+    updates: Partial<Pick<User, "name" | "email" | "memoryEnabled" | "customInstructionsAbout" | "customInstructionsStyle">>
+  ) => void;
+  requestPasswordReset: (email: string) => Promise<AuthResult>;
+  updatePassword: (newPassword: string) => Promise<AuthResult>;
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -41,7 +45,7 @@ async function toAppUser(
 ): Promise<User> {
   const { data: profile } = await supabase
     .from("profiles")
-    .select("name")
+    .select("name, memory_enabled, custom_instructions_about, custom_instructions_style")
     .eq("id", supabaseUser.id)
     .maybeSingle();
 
@@ -50,6 +54,9 @@ async function toAppUser(
     name: profile?.name ?? supabaseUser.email?.split("@")[0] ?? "Guest",
     email: supabaseUser.email ?? "",
     isGuest: supabaseUser.is_anonymous ?? false,
+    memoryEnabled: profile?.memory_enabled ?? true,
+    customInstructionsAbout: profile?.custom_instructions_about ?? "",
+    customInstructionsStyle: profile?.custom_instructions_style ?? "",
   };
 }
 
@@ -178,8 +185,39 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     void supabase.auth.signOut();
   }, [supabase]);
 
+  const requestPasswordReset = useCallback(
+    async (email: string): Promise<AuthResult> => {
+      if (!isValidEmail(email)) return { ok: false, error: "Enter a valid email address." };
+
+      // Supabase doesn't reveal whether the email is registered — a missing
+      // account still resolves with no error here, which is what keeps this
+      // safe from account enumeration.
+      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: `${window.location.origin}/reset-password`,
+      });
+      if (error) return { ok: false, error: error.message };
+      return { ok: true };
+    },
+    [supabase]
+  );
+
+  const updatePassword = useCallback(
+    async (newPassword: string): Promise<AuthResult> => {
+      if (newPassword.length < 6) return { ok: false, error: "Password must be at least 6 characters." };
+
+      const { error } = await supabase.auth.updateUser({ password: newPassword });
+      if (error) return { ok: false, error: error.message };
+      return { ok: true };
+    },
+    [supabase]
+  );
+
   const updateProfile = useCallback(
-    (updates: Partial<Pick<User, "name" | "email">>) => {
+    (
+      updates: Partial<
+        Pick<User, "name" | "email" | "memoryEnabled" | "customInstructionsAbout" | "customInstructionsStyle">
+      >
+    ) => {
       setUser((prev) => (prev ? { ...prev, ...updates } : prev));
 
       void (async () => {
@@ -196,14 +234,55 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           const { error } = await supabase.auth.updateUser({ email: updates.email });
           if (error) console.error("[auth] failed to update email:", error.message);
         }
+        if (updates.memoryEnabled !== undefined) {
+          const { error } = await supabase
+            .from("profiles")
+            .update({ memory_enabled: updates.memoryEnabled })
+            .eq("id", current.id);
+          if (error) console.error("[auth] failed to update memory setting:", error.message);
+        }
+        if (updates.customInstructionsAbout !== undefined || updates.customInstructionsStyle !== undefined) {
+          const { error } = await supabase
+            .from("profiles")
+            .update({
+              ...(updates.customInstructionsAbout !== undefined
+                ? { custom_instructions_about: updates.customInstructionsAbout }
+                : {}),
+              ...(updates.customInstructionsStyle !== undefined
+                ? { custom_instructions_style: updates.customInstructionsStyle }
+                : {}),
+            })
+            .eq("id", current.id);
+          if (error) console.error("[auth] failed to update custom instructions:", error.message);
+        }
       })();
     },
     [supabase]
   );
 
   const value = useMemo<AuthContextValue>(
-    () => ({ user, isLoading, signIn, signUp, continueAsGuest, signOut, updateProfile }),
-    [user, isLoading, signIn, signUp, continueAsGuest, signOut, updateProfile]
+    () => ({
+      user,
+      isLoading,
+      signIn,
+      signUp,
+      continueAsGuest,
+      signOut,
+      updateProfile,
+      requestPasswordReset,
+      updatePassword,
+    }),
+    [
+      user,
+      isLoading,
+      signIn,
+      signUp,
+      continueAsGuest,
+      signOut,
+      updateProfile,
+      requestPasswordReset,
+      updatePassword,
+    ]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

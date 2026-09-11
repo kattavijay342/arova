@@ -1,6 +1,6 @@
 import { getGeminiEnv } from "./aiEnv";
-import { streamGeminiReply } from "./gemini";
-import type { ImageAttachment, Mode } from "@/lib/types";
+import { streamGeminiReply, type StreamReplyOptions } from "./gemini";
+import type { Mode } from "@/lib/types";
 
 interface HistoryMessage {
   role: "user" | "assistant";
@@ -21,7 +21,7 @@ export function streamAIReply(
   mode: Mode,
   userMessage: string,
   history: HistoryMessage[] = [],
-  attachment?: ImageAttachment
+  options?: StreamReplyOptions
 ): AsyncGenerator<string, void, unknown> {
-  return streamGeminiReply(mode, userMessage, history, attachment);
+  return streamGeminiReply(mode, userMessage, history, options);
 }

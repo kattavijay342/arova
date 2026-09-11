@@ -111,3 +111,81 @@ export function extractScore(messages: Message[]): number | null {
   }
   return null;
 }
+
+const QUESTION_LINE_RE = /^Mock interview — Question (\d+) of \d+\s*$/m;
+
+export interface InterviewQA {
+  number: number;
+  /** The interviewer's message for this question — includes brief feedback on the previous answer (for Q2+) followed by the question itself, exactly as the AI wrote it. The marker line used for UI parsing is stripped. */
+  interviewerMessage: string;
+  /** The user's next message after this question, or null if the conversation ended before they answered (e.g. mid-interview). */
+  answer: string | null;
+}
+
+export interface InterviewTranscript {
+  role: string;
+  startedAt: string;
+  /** Timestamp of the completion message, or null if the interview hasn't finished yet. */
+  completedAt: string | null;
+  questions: InterviewQA[];
+  /** Feedback on the final answer that precedes the "Interview Complete" heading in the last message, if any. */
+  finalRemarks: string | null;
+  score: ScoreData | null;
+}
+
+/**
+ * Reconstructs the full mock-interview transcript (every question, the
+ * user's actual answers, and the final score/feedback) straight from the
+ * conversation's message history — nothing here is invented; a field is
+ * simply omitted (null / empty) when the data isn't present in the
+ * conversation, e.g. an interview abandoned partway through.
+ */
+export function extractInterviewTranscript(messages: Message[]): InterviewTranscript | null {
+  const state = getInterviewState(messages);
+  if (!state) return null;
+
+  const questions: InterviewQA[] = [];
+  let startedAt: string | null = null;
+  let scoreMessage: Message | null = null;
+
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    if (m.role !== "assistant") continue;
+
+    if (m.content.includes(SCORE_MARKER)) {
+      scoreMessage = m;
+      continue;
+    }
+
+    const match = m.content.match(QUESTION_LINE_RE);
+    if (!match) continue;
+
+    if (!startedAt) startedAt = m.createdAt;
+    const interviewerMessage = m.content.replace(QUESTION_LINE_RE, "").trim();
+    const next = messages[i + 1];
+    const answer = next && next.role === "user" ? next.content : null;
+    questions.push({ number: Number(match[1]), interviewerMessage, answer });
+  }
+
+  questions.sort((a, b) => a.number - b.number);
+
+  let finalRemarks: string | null = null;
+  let score: ScoreData | null = null;
+  if (scoreMessage) {
+    score = parseScoreCard(scoreMessage.content);
+    const idx = scoreMessage.content.indexOf(SCORE_MARKER);
+    const pre = scoreMessage.content.slice(0, idx).trim();
+    finalRemarks = pre.length > 0 ? pre : null;
+  }
+
+  const trigger = messages.find((m) => m.role === "user" && /interview/i.test(m.content));
+
+  return {
+    role: trigger ? extractRole(trigger.content) : "General",
+    startedAt: startedAt ?? messages[0]?.createdAt ?? new Date().toISOString(),
+    completedAt: scoreMessage?.createdAt ?? null,
+    questions,
+    finalRemarks,
+    score,
+  };
+}

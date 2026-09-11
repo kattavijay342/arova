@@ -1,7 +1,7 @@
 import type { Mode } from "@/lib/types";
 import { MODES } from "@/lib/modes";
 
-export function TypingIndicator({ mode }: { mode: Mode }) {
+export function TypingIndicator({ mode, label }: { mode: Mode; label?: string }) {
   const modeConfig = MODES[mode];
   const Icon = modeConfig.icon;
 
@@ -22,11 +22,12 @@ export function TypingIndicator({ mode }: { mode: Mode }) {
           {modeConfig.assistantLabel}
         </span>
         <div
-          className="flex items-center gap-1.5 rounded-2xl rounded-tl-sm border-2 bg-surface-raised px-4 py-3.5"
+          className="flex items-center gap-2 rounded-2xl rounded-tl-sm border-2 bg-surface-raised px-4 py-3.5"
           style={{ borderColor: modeConfig.colorSoft }}
           role="status"
-          aria-label={`${modeConfig.shortLabel} assistant is typing`}
+          aria-label={label ?? `${modeConfig.shortLabel} assistant is typing`}
         >
+          {label && <span className="text-[13px] text-muted">{label}</span>}
           <span className="h-2 w-2 animate-bounce-dot rounded-full bg-faint [animation-delay:-0.3s]" />
           <span className="h-2 w-2 animate-bounce-dot rounded-full bg-faint [animation-delay:-0.15s]" />
           <span className="h-2 w-2 animate-bounce-dot rounded-full bg-faint" />

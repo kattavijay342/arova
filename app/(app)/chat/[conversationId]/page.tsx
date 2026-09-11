@@ -12,12 +12,12 @@ import { FullPageLoader } from "@/components/ui/Spinner";
 import { Button } from "@/components/ui/Button";
 import { MODES } from "@/lib/modes";
 import { getInterviewState } from "@/lib/interview";
-import type { ImageAttachment } from "@/lib/types";
+import type { MessageAttachment } from "@/lib/types";
 
 export default function ChatConversationPage() {
   const { conversationId } = useParams<{ conversationId: string }>();
   const router = useRouter();
-  const { getConversation, sendMessage, status, hydrated } = useChat();
+  const { getConversation, sendMessage, generateImage, status, imageGenerating, hydrated } = useChat();
   const [draft, setDraft] = useState("");
 
   const conversation = getConversation(conversationId);
@@ -39,10 +39,21 @@ export default function ChatConversationPage() {
     );
   }
 
-  function handleSend(text: string, attachment?: ImageAttachment | null) {
-    if ((!text.trim() && !attachment) || status === "loading") return;
+  function handleSend(
+    text: string,
+    attachment?: MessageAttachment | null,
+    webSearch?: boolean,
+    deepResearch?: boolean,
+    jobFitAnalysis?: boolean
+  ) {
+    if ((!text.trim() && !attachment) || status === "loading" || imageGenerating) return;
     setDraft("");
-    void sendMessage(conversationId, text, attachment);
+    void sendMessage(conversationId, text, attachment, webSearch, deepResearch, jobFitAnalysis);
+  }
+
+  function handleGenerateImage(prompt: string) {
+    if (!prompt.trim() || status === "loading" || imageGenerating) return;
+    void generateImage(conversationId, prompt);
   }
 
   const interviewState = conversation.mode === "career" ? getInterviewState(conversation.messages) : null;
@@ -56,9 +67,10 @@ export default function ChatConversationPage() {
         value={draft}
         onChange={setDraft}
         onSend={handleSend}
+        onGenerateImage={handleGenerateImage}
         mode={conversation.mode}
-        disabled={status === "loading"}
-        placeholder={`Message ${MODES[conversation.mode].shortLabel} mode…`}
+        disabled={status === "loading" || imageGenerating}
+        placeholder={`Ask anything in ${MODES[conversation.mode].shortLabel} Mode…`}
       />
     </div>
   );

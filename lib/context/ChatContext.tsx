@@ -10,7 +10,7 @@ import {
   useRef,
   type ReactNode,
 } from "react";
-import type { ChatStatus, Conversation, FeedbackRating, ImageAttachment, Message, Mode } from "../types";
+import type { ChatStatus, Conversation, FeedbackRating, Message, MessageAttachment, Mode } from "../types";
 import { generateId, truncate } from "../utils";
 import { useAuth } from "./AuthContext";
 
@@ -18,8 +18,20 @@ interface ChatState {
   conversations: Conversation[];
   status: ChatStatus;
   error: string | null;
-  lastFailedMessage: { conversationId: string; text: string; attachment?: ImageAttachment | null } | null;
+  lastFailedMessage: {
+    conversationId: string;
+    text: string;
+    attachment?: MessageAttachment | null;
+    webSearch?: boolean;
+    deepResearch?: boolean;
+    jobFitAnalysis?: boolean;
+  } | null;
   hydrated: boolean;
+  // Kept separate from `status`/`error` (rather than reused) so an
+  // in-flight/failed image generation never gets confused with, or blocks,
+  // an unrelated ordinary text send in the same conversation.
+  imageGenerating: boolean;
+  imageGenerationError: string | null;
 }
 
 type Action =
@@ -28,16 +40,35 @@ type Action =
   | { type: "ADD_MESSAGE"; conversationId: string; message: Message; retitle?: string }
   | { type: "UPDATE_MESSAGE_CONTENT"; conversationId: string; messageId: string; content: string }
   | { type: "REPLACE_MESSAGE"; conversationId: string; messageId: string; message: Message }
+  | {
+      type: "SYNC_USER_MESSAGE_ID";
+      conversationId: string;
+      tempId: string;
+      realId: string;
+      createdAt: string;
+      content: string;
+    }
   | { type: "REMOVE_MESSAGE"; conversationId: string; messageId: string }
+  | { type: "REMOVE_MESSAGES"; conversationId: string; messageIds: string[] }
+  | { type: "EDIT_MESSAGE_AND_TRIM"; conversationId: string; messageId: string; content: string }
+  | { type: "SET_MESSAGES"; conversationId: string; messages: Message[] }
   | { type: "DELETE_CONVERSATION"; id: string }
   | { type: "CLEAR_ALL" }
   | { type: "RENAME_CONVERSATION"; id: string; title: string }
   | { type: "SET_STATUS"; status: ChatStatus; error?: string | null }
   | {
       type: "SET_LAST_FAILED";
-      value: { conversationId: string; text: string; attachment?: ImageAttachment | null } | null;
+      value: {
+        conversationId: string;
+        text: string;
+        attachment?: MessageAttachment | null;
+        webSearch?: boolean;
+        deepResearch?: boolean;
+        jobFitAnalysis?: boolean;
+      } | null;
     }
-  | { type: "SET_MESSAGE_FEEDBACK"; conversationId: string; messageId: string; feedback: FeedbackRating | null };
+  | { type: "SET_MESSAGE_FEEDBACK"; conversationId: string; messageId: string; feedback: FeedbackRating | null }
+  | { type: "SET_IMAGE_GENERATION_STATUS"; generating: boolean; error?: string | null };
 
 function reducer(state: ChatState, action: Action): ChatState {
   switch (action.type) {
@@ -86,6 +117,31 @@ function reducer(state: ChatState, action: Action): ChatState {
             : c
         ),
       };
+    // Reconciles the client-generated temp id a just-sent user message was
+    // optimistically added under (see sendMessage) with its real database
+    // id, once the server reports it — see postAndHandleReply's handling of
+    // the "user_message" stream event. Merges rather than replaces (unlike
+    // REPLACE_MESSAGE) so client-only fields with no server-side equivalent
+    // (imageDataUrl, documentMeta, datasetMeta) survive; without this, any
+    // action addressed by message id — Edit, Delete, feedback — would 404
+    // against a temp id that was never a real row, until a full reload
+    // re-hydrated the conversation from the server.
+    case "SYNC_USER_MESSAGE_ID":
+      return {
+        ...state,
+        conversations: state.conversations.map((c) =>
+          c.id === action.conversationId
+            ? {
+                ...c,
+                messages: c.messages.map((m) =>
+                  m.id === action.tempId
+                    ? { ...m, id: action.realId, createdAt: action.createdAt, content: action.content }
+                    : m
+                ),
+              }
+            : c
+        ),
+      };
     case "REMOVE_MESSAGE":
       return {
         ...state,
@@ -93,6 +149,37 @@ function reducer(state: ChatState, action: Action): ChatState {
           c.id === action.conversationId
             ? { ...c, messages: c.messages.filter((m) => m.id !== action.messageId) }
             : c
+        ),
+      };
+    // Deleting a user question also removes its paired assistant reply (see
+    // deleteMessage) — both are removed from local state in one update so
+    // the UI never shows an orphan answer even for the single render between
+    // the two.
+    case "REMOVE_MESSAGES":
+      return {
+        ...state,
+        conversations: state.conversations.map((c) =>
+          c.id === action.conversationId
+            ? { ...c, messages: c.messages.filter((m) => !action.messageIds.includes(m.id)) }
+            : c
+        ),
+      };
+    case "EDIT_MESSAGE_AND_TRIM":
+      return {
+        ...state,
+        conversations: state.conversations.map((c) => {
+          if (c.id !== action.conversationId) return c;
+          const index = c.messages.findIndex((m) => m.id === action.messageId);
+          if (index === -1) return c;
+          const edited = { ...c.messages[index], content: action.content };
+          return { ...c, messages: [...c.messages.slice(0, index), edited] };
+        }),
+      };
+    case "SET_MESSAGES":
+      return {
+        ...state,
+        conversations: state.conversations.map((c) =>
+          c.id === action.conversationId ? { ...c, messages: action.messages } : c
         ),
       };
     case "DELETE_CONVERSATION":
@@ -124,6 +211,8 @@ function reducer(state: ChatState, action: Action): ChatState {
             : c
         ),
       };
+    case "SET_IMAGE_GENERATION_STATUS":
+      return { ...state, imageGenerating: action.generating, imageGenerationError: action.error ?? null };
     default:
       return state;
   }
@@ -134,15 +223,29 @@ interface ChatContextValue {
   status: ChatStatus;
   error: string | null;
   hydrated: boolean;
+  imageGenerating: boolean;
+  imageGenerationError: string | null;
   getConversation: (id: string) => Conversation | undefined;
-  createConversation: (mode: Mode) => Promise<string>;
-  sendMessage: (conversationId: string, text: string, attachment?: ImageAttachment | null) => Promise<void>;
+  refreshConversations: () => Promise<void>;
+  createConversation: (mode: Mode, projectId?: string) => Promise<string>;
+  sendMessage: (
+    conversationId: string,
+    text: string,
+    attachment?: MessageAttachment | null,
+    webSearch?: boolean,
+    deepResearch?: boolean,
+    jobFitAnalysis?: boolean
+  ) => Promise<void>;
   retryLastMessage: () => Promise<void>;
   deleteConversation: (id: string) => void;
   renameConversation: (id: string, title: string) => void;
   clearAllConversations: () => void;
   dismissError: () => void;
   submitFeedback: (conversationId: string, messageId: string, rating: FeedbackRating) => void;
+  editMessage: (conversationId: string, messageId: string, content: string) => Promise<void>;
+  deleteMessage: (conversationId: string, messageId: string) => Promise<void>;
+  generateImage: (conversationId: string, prompt: string) => Promise<void>;
+  dismissImageGenerationError: () => void;
 }
 
 const ChatContext = createContext<ChatContextValue | undefined>(undefined);
@@ -163,6 +266,7 @@ interface RawConversation {
   title: string;
   created_at: string;
   updated_at: string;
+  project_id?: string | null;
   messages?: RawMessage[];
 }
 
@@ -183,6 +287,7 @@ function mapConversation(c: RawConversation): Conversation {
     title: c.title,
     createdAt: c.created_at,
     updatedAt: c.updated_at,
+    projectId: c.project_id ?? null,
     messages: (c.messages ?? []).map(mapMessage),
   };
 }
@@ -207,6 +312,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     error: null,
     lastFailedMessage: null,
     hydrated: false,
+    imageGenerating: false,
+    imageGenerationError: null,
   });
 
   // Always-current snapshot of `state.conversations` for callbacks below that
@@ -247,15 +354,28 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     };
   }, [userId]);
 
+  // Re-fetches the full conversation list from the server. Needed after
+  // deleting a project: `conversations.project_id` is cleared server-side
+  // (`on delete set null`), but the client's already-hydrated copy has no
+  // way to know that on its own since projects live in a separate context.
+  const refreshConversations = useCallback(async () => {
+    try {
+      const rows = await apiFetch<RawConversation[]>("/api/conversations");
+      dispatch({ type: "HYDRATE", conversations: rows.map(mapConversation) });
+    } catch (err) {
+      console.error("[chat] failed to refresh conversations:", err);
+    }
+  }, []);
+
   const getConversation = useCallback(
     (id: string) => state.conversations.find((c) => c.id === id),
     [state.conversations]
   );
 
-  const createConversation = useCallback(async (mode: Mode): Promise<string> => {
+  const createConversation = useCallback(async (mode: Mode, projectId?: string): Promise<string> => {
     const row = await apiFetch<RawConversation>("/api/conversations", {
       method: "POST",
-      body: JSON.stringify({ mode }),
+      body: JSON.stringify(projectId ? { mode, projectId } : { mode }),
     });
     const conversation = mapConversation(row);
     dispatch({ type: "ADD_CONVERSATION", conversation });
@@ -277,7 +397,20 @@ export function ChatProvider({ children }: { children: ReactNode }) {
    * assistant bubble behind.
    */
   const postAndHandleReply = useCallback(
-    async (conversationId: string, text: string, attachment?: ImageAttachment | null) => {
+    async (
+      conversationId: string,
+      text: string,
+      attachment?: MessageAttachment | null,
+      webSearch?: boolean,
+      deepResearch?: boolean,
+      jobFitAnalysis?: boolean,
+      // The temp client-generated id the just-added optimistic user message
+      // is holding (see sendMessage) — reconciled with the real database id
+      // as soon as the server reports it, so Edit/Delete/feedback on that
+      // message work without needing a page reload first. Omitted by
+      // editMessage/retryLastMessage, which don't add a new message.
+      localUserMessageId?: string
+    ) => {
       dispatch({ type: "SET_STATUS", status: "loading" });
 
       const streamMessageId = generateId();
@@ -288,7 +421,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         const res = await fetch(`/api/conversations/${conversationId}/messages`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(attachment ? { content: text, attachment } : { content: text }),
+          body: JSON.stringify({
+            content: text,
+            ...(attachment ? { attachment } : {}),
+            ...(webSearch ? { webSearch } : {}),
+            ...(deepResearch ? { deepResearch } : {}),
+            ...(jobFitAnalysis ? { jobFitAnalysis } : {}),
+          }),
         });
 
         if (!res.ok || !res.body) {
@@ -313,11 +452,23 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             if (!line) continue;
 
             const event = JSON.parse(line) as
+              | { type: "user_message"; message: RawMessage }
               | { type: "chunk"; delta: string }
               | { type: "done"; assistantMessage: RawMessage }
               | { type: "error"; code: string; message: string };
 
-            if (event.type === "chunk") {
+            if (event.type === "user_message") {
+              if (localUserMessageId) {
+                dispatch({
+                  type: "SYNC_USER_MESSAGE_ID",
+                  conversationId,
+                  tempId: localUserMessageId,
+                  realId: event.message.id,
+                  createdAt: event.message.created_at,
+                  content: event.message.content,
+                });
+              }
+            } else if (event.type === "chunk") {
               accumulated += event.delta;
               if (!started) {
                 started = true;
@@ -353,46 +504,87 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         const message = err instanceof Error ? err.message : "Something went wrong.";
         if (started) dispatch({ type: "REMOVE_MESSAGE", conversationId, messageId: streamMessageId });
         dispatch({ type: "SET_STATUS", status: "error", error: message });
-        dispatch({ type: "SET_LAST_FAILED", value: { conversationId, text, attachment } });
+        dispatch({
+          type: "SET_LAST_FAILED",
+          value: { conversationId, text, attachment, webSearch, deepResearch, jobFitAnalysis },
+        });
       }
     },
     []
   );
 
   const sendMessage = useCallback(
-    async (conversationId: string, text: string, attachment?: ImageAttachment | null) => {
+    async (
+      conversationId: string,
+      text: string,
+      attachment?: MessageAttachment | null,
+      webSearch?: boolean,
+      deepResearch?: boolean,
+      jobFitAnalysis?: boolean
+    ) => {
       const trimmed = text.trim();
       if (!trimmed && !attachment) return;
       const convo = state.conversations.find((c) => c.id === conversationId);
       if (!convo) return;
 
       const isFirstMessage = convo.messages.length === 0;
+      const localMessageId = generateId();
       dispatch({
         type: "ADD_MESSAGE",
         conversationId,
         message: {
-          id: generateId(),
+          id: localMessageId,
           role: "user",
           content: trimmed,
           createdAt: new Date().toISOString(),
-          imageDataUrl: attachment ? `data:${attachment.mimeType};base64,${attachment.data}` : undefined,
+          imageDataUrl:
+            attachment?.kind === "image" ? `data:${attachment.mimeType};base64,${attachment.data}` : undefined,
+          documentMeta:
+            attachment?.kind === "document"
+              ? {
+                  filename: attachment.filename,
+                  mimeType: attachment.mimeType,
+                  // Approximated from the base64 payload — the real, exact
+                  // extracted character count comes back from the server and
+                  // is only known after a reload (see lib/document.ts).
+                  fileSizeBytes: Math.ceil((attachment.data.length * 3) / 4),
+                }
+              : undefined,
+          datasetMeta:
+            attachment?.kind === "dataset"
+              ? {
+                  filename: attachment.filename,
+                  mimeType: attachment.mimeType,
+                  // Approximated from the base64 payload — the real row
+                  // count comes back from the server and is only known
+                  // after a reload (see lib/dataset.ts).
+                  fileSizeBytes: Math.ceil((attachment.data.length * 3) / 4),
+                }
+              : undefined,
         },
-        retitle: isFirstMessage ? truncate(trimmed, 38) || "Image" : undefined,
+        retitle: isFirstMessage
+          ? truncate(trimmed, 38) ||
+            (attachment?.kind === "document" || attachment?.kind === "dataset"
+              ? attachment.filename
+              : attachment
+                ? "Image"
+                : undefined)
+          : undefined,
       });
 
-      await postAndHandleReply(conversationId, trimmed, attachment);
+      await postAndHandleReply(conversationId, trimmed, attachment, webSearch, deepResearch, jobFitAnalysis, localMessageId);
     },
     [state.conversations, postAndHandleReply]
   );
 
   const retryLastMessage = useCallback(async () => {
     if (!state.lastFailedMessage) return;
-    const { conversationId, text, attachment } = state.lastFailedMessage;
+    const { conversationId, text, attachment, webSearch, deepResearch, jobFitAnalysis } = state.lastFailedMessage;
     // The failed user message is already visible (added optimistically by
     // sendMessage) — don't add it again, just re-attempt the AI reply. The
     // API route recognizes this as a retry (same trailing unanswered user
     // message) and won't insert a duplicate row.
-    await postAndHandleReply(conversationId, text, attachment);
+    await postAndHandleReply(conversationId, text, attachment, webSearch, deepResearch, jobFitAnalysis);
   }, [state.lastFailedMessage, postAndHandleReply]);
 
   const deleteConversation = useCallback((id: string) => {
@@ -448,13 +640,145 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     []
   );
 
+  // Shared rollback for editMessage/deleteMessage: re-fetches this one
+  // conversation's messages from the server and replaces local state with
+  // the authoritative version, rather than trying to surgically reconstruct
+  // what the optimistic update undid (which risks re-inserting a message at
+  // the wrong position or missing a concurrent change).
+  const rollbackConversationMessages = useCallback(async (conversationId: string) => {
+    try {
+      const row = await apiFetch<RawConversation>(`/api/conversations/${conversationId}`);
+      dispatch({ type: "SET_MESSAGES", conversationId, messages: mapConversation(row).messages });
+    } catch (err) {
+      console.error("[chat] failed to reload conversation after a failed edit/delete:", err);
+    }
+  }, []);
+
+  const deleteMessage = useCallback(
+    async (conversationId: string, messageId: string) => {
+      // A deleted user question can't leave its answer orphaned — mirrors
+      // the server's own pairing rule (see DELETE /api/messages/[id]) so the
+      // optimistic UI update matches what actually gets removed from the
+      // database, without waiting for a round-trip.
+      const convo = conversationsRef.current.find((c) => c.id === conversationId);
+      const index = convo?.messages.findIndex((m) => m.id === messageId) ?? -1;
+      const target = index >= 0 ? convo!.messages[index] : undefined;
+      const next = index >= 0 ? convo!.messages[index + 1] : undefined;
+      const pairedAssistantId =
+        target?.role === "user" && next?.role === "assistant" ? next.id : undefined;
+
+      const messageIds = pairedAssistantId ? [messageId, pairedAssistantId] : [messageId];
+      dispatch({ type: "REMOVE_MESSAGES", conversationId, messageIds });
+      try {
+        await apiFetch(`/api/messages/${messageId}`, { method: "DELETE" });
+      } catch (err) {
+        console.error("[chat] failed to delete message:", err);
+        await rollbackConversationMessages(conversationId);
+        dispatch({
+          type: "SET_STATUS",
+          status: "error",
+          error: err instanceof Error ? err.message : "Could not delete that message. Please try again.",
+        });
+      }
+    },
+    [rollbackConversationMessages]
+  );
+
+  /**
+   * Edits a user message in place, discards every message that followed it
+   * (this app has no branching history, so an edited question can't coexist
+   * with an answer to its old wording), then regenerates a fresh reply —
+   * reusing `postAndHandleReply`, the same streaming path a normal send
+   * uses, since the edited message is now the conversation's unanswered
+   * last message (the API route's existing retry-dedup logic recognizes
+   * this and won't insert a duplicate row).
+   */
+  const editMessage = useCallback(
+    async (conversationId: string, messageId: string, content: string) => {
+      const trimmed = content.trim();
+      if (!trimmed) return;
+
+      dispatch({ type: "EDIT_MESSAGE_AND_TRIM", conversationId, messageId, content: trimmed });
+
+      try {
+        await apiFetch(`/api/messages/${messageId}`, {
+          method: "PATCH",
+          body: JSON.stringify({ content: trimmed }),
+        });
+      } catch (err) {
+        console.error("[chat] failed to edit message:", err);
+        await rollbackConversationMessages(conversationId);
+        dispatch({
+          type: "SET_STATUS",
+          status: "error",
+          error: err instanceof Error ? err.message : "Could not save your edit. Please try again.",
+        });
+        return;
+      }
+
+      await postAndHandleReply(conversationId, trimmed);
+    },
+    [rollbackConversationMessages, postAndHandleReply]
+  );
+
+  /**
+   * Generates one image from a prompt via the dedicated (non-streaming)
+   * /images endpoint. The user's prompt is added optimistically, exactly
+   * like sendMessage — it stays visible even if generation fails, so
+   * "Retry"/"Regenerate" can resend the same prompt. Kept entirely separate
+   * from `postAndHandleReply`/`status`: image generation is a plain
+   * request/response, not a token stream, and shouldn't be able to block or
+   * be blocked by an unrelated ordinary chat send.
+   */
+  const generateImage = useCallback(
+    async (conversationId: string, prompt: string) => {
+      const trimmed = prompt.trim();
+      if (!trimmed) return;
+      const convo = state.conversations.find((c) => c.id === conversationId);
+      if (!convo) return;
+
+      const isFirstMessage = convo.messages.length === 0;
+      dispatch({
+        type: "ADD_MESSAGE",
+        conversationId,
+        message: { id: generateId(), role: "user", content: trimmed, createdAt: new Date().toISOString() },
+        retitle: isFirstMessage ? truncate(trimmed, 38) || undefined : undefined,
+      });
+
+      dispatch({ type: "SET_IMAGE_GENERATION_STATUS", generating: true, error: null });
+
+      try {
+        const assistantRow = await apiFetch<RawMessage>(`/api/conversations/${conversationId}/images`, {
+          method: "POST",
+          body: JSON.stringify({ prompt: trimmed }),
+        });
+        dispatch({ type: "ADD_MESSAGE", conversationId, message: mapMessage(assistantRow) });
+        dispatch({ type: "SET_IMAGE_GENERATION_STATUS", generating: false, error: null });
+      } catch (err) {
+        dispatch({
+          type: "SET_IMAGE_GENERATION_STATUS",
+          generating: false,
+          error: err instanceof Error ? err.message : "Could not generate the image. Please try again.",
+        });
+      }
+    },
+    [state.conversations]
+  );
+
+  const dismissImageGenerationError = useCallback(() => {
+    dispatch({ type: "SET_IMAGE_GENERATION_STATUS", generating: false, error: null });
+  }, []);
+
   const value = useMemo<ChatContextValue>(
     () => ({
       conversations: state.conversations,
       status: state.status,
       error: state.error,
       hydrated: state.hydrated,
+      imageGenerating: state.imageGenerating,
+      imageGenerationError: state.imageGenerationError,
       getConversation,
+      refreshConversations,
       createConversation,
       sendMessage,
       retryLastMessage,
@@ -463,13 +787,20 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       clearAllConversations,
       dismissError,
       submitFeedback,
+      editMessage,
+      deleteMessage,
+      generateImage,
+      dismissImageGenerationError,
     }),
     [
       state.conversations,
       state.status,
       state.error,
       state.hydrated,
+      state.imageGenerating,
+      state.imageGenerationError,
       getConversation,
+      refreshConversations,
       createConversation,
       sendMessage,
       retryLastMessage,
@@ -478,6 +809,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       clearAllConversations,
       dismissError,
       submitFeedback,
+      editMessage,
+      deleteMessage,
+      generateImage,
+      dismissImageGenerationError,
     ]
   );
 

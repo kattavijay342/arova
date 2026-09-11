@@ -20,3 +20,14 @@ export function getGeminiEnv() {
     model: process.env.GEMINI_MODEL || "gemini-3.6-flash",
   };
 }
+
+/**
+ * The text/chat model (above) has no image-generation capability at all —
+ * this is a distinct, separately-configurable model for
+ * lib/server/imageGeneration.ts. Defaults to Gemini's native
+ * image-output-capable model rather than a dedicated Imagen model, matching
+ * this app's existing single-endpoint conversational style.
+ */
+export function getGeminiImageModel(): string {
+  return process.env.GEMINI_IMAGE_MODEL || "gemini-2.5-flash-image";
+}

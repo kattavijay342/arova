@@ -169,6 +169,29 @@ create policy "Users can insert messages into their own conversations"
     )
   );
 
+-- Added for chat-management Phase 1 (edit/delete a single message). The
+-- table previously had no update/delete policy, so both actions would have
+-- been silently blocked by RLS even with a correct API route in front of them.
+drop policy if exists "Users can update messages in their own conversations" on public.messages;
+create policy "Users can update messages in their own conversations"
+  on public.messages for update
+  using (
+    exists (
+      select 1 from public.conversations c
+      where c.id = messages.conversation_id and c.user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "Users can delete messages in their own conversations" on public.messages;
+create policy "Users can delete messages in their own conversations"
+  on public.messages for delete
+  using (
+    exists (
+      select 1 from public.conversations c
+      where c.id = messages.conversation_id and c.user_id = auth.uid()
+    )
+  );
+
 -- ─────────────────────────────────────────────
 -- message_feedback: thumbs up/down (+ optional comment) on a message,
 -- one row per (message, user).
@@ -239,3 +262,150 @@ from public.profiles p
 left join public.conversations c on c.user_id = p.id
 left join public.messages m on m.conversation_id = c.id
 group by p.id, p.created_at;
+
+-- ─────────────────────────────────────────────
+-- Memory (Phase 6): short, user-saved facts the AI is given as context on
+-- every message, across every conversation and mode. Manual only — there is
+-- no automatic extraction anywhere in this app, so nothing is ever stored
+-- here unless the user explicitly chose to save it (via the "Remember
+-- this" action or the Settings page). `memory_enabled` on profiles is a
+-- separate, non-destructive on/off switch: turning it off stops memories
+-- from being saved or used, without deleting any of them.
+-- ─────────────────────────────────────────────
+alter table public.profiles add column if not exists memory_enabled boolean not null default true;
+
+create table if not exists public.user_memories (
+  id         uuid primary key default gen_random_uuid(),
+  user_id    uuid not null references auth.users (id) on delete cascade,
+  content    text not null check (char_length(content) between 1 and 500),
+  created_at timestamptz not null default now()
+);
+
+create index if not exists user_memories_user_id_idx on public.user_memories (user_id);
+
+alter table public.user_memories enable row level security;
+
+drop policy if exists "Users can view their own memories" on public.user_memories;
+create policy "Users can view their own memories"
+  on public.user_memories for select
+  using (auth.uid() = user_id);
+
+drop policy if exists "Users can create their own memories" on public.user_memories;
+create policy "Users can create their own memories"
+  on public.user_memories for insert
+  with check (auth.uid() = user_id);
+
+drop policy if exists "Users can delete their own memories" on public.user_memories;
+create policy "Users can delete their own memories"
+  on public.user_memories for delete
+  using (auth.uid() = user_id);
+
+-- ─────────────────────────────────────────────
+-- Projects (Phase 7): a mode-agnostic container that groups conversations
+-- together, with its own custom instructions and reference files — both
+-- given to the AI as extra context (alongside the mode's own instructions
+-- and any memory) for every conversation inside the project. A
+-- conversation's `project_id` is optional; conversations with no project
+-- keep working exactly as before.
+-- ─────────────────────────────────────────────
+create table if not exists public.projects (
+  id           uuid primary key default gen_random_uuid(),
+  user_id      uuid not null references auth.users (id) on delete cascade,
+  name         text not null check (char_length(name) between 1 and 100),
+  instructions text not null default '' check (char_length(instructions) <= 4000),
+  created_at   timestamptz not null default now(),
+  updated_at   timestamptz not null default now()
+);
+
+create index if not exists projects_user_id_idx on public.projects (user_id);
+
+drop trigger if exists projects_set_updated_at on public.projects;
+create trigger projects_set_updated_at
+  before update on public.projects
+  for each row execute function public.set_updated_at();
+
+alter table public.projects enable row level security;
+
+drop policy if exists "Users can view their own projects" on public.projects;
+create policy "Users can view their own projects"
+  on public.projects for select
+  using (auth.uid() = user_id);
+
+drop policy if exists "Users can create their own projects" on public.projects;
+create policy "Users can create their own projects"
+  on public.projects for insert
+  with check (auth.uid() = user_id);
+
+drop policy if exists "Users can update their own projects" on public.projects;
+create policy "Users can update their own projects"
+  on public.projects for update
+  using (auth.uid() = user_id);
+
+drop policy if exists "Users can delete their own projects" on public.projects;
+create policy "Users can delete their own projects"
+  on public.projects for delete
+  using (auth.uid() = user_id);
+
+-- Nullable, optional link — `on delete set null` so deleting a project
+-- never deletes the conversations that were inside it, just un-groups them.
+alter table public.conversations add column if not exists project_id uuid references public.projects (id) on delete set null;
+create index if not exists conversations_project_id_idx on public.conversations (project_id);
+
+create table if not exists public.project_files (
+  id             uuid primary key default gen_random_uuid(),
+  project_id     uuid not null references public.projects (id) on delete cascade,
+  filename       text not null,
+  mime_type      text not null,
+  extracted_text text not null,
+  char_count     integer not null,
+  truncated      boolean not null default false,
+  created_at     timestamptz not null default now()
+);
+
+create index if not exists project_files_project_id_idx on public.project_files (project_id);
+
+alter table public.project_files enable row level security;
+
+drop policy if exists "Users can view files in their own projects" on public.project_files;
+create policy "Users can view files in their own projects"
+  on public.project_files for select
+  using (
+    exists (
+      select 1 from public.projects p
+      where p.id = project_files.project_id and p.user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "Users can add files to their own projects" on public.project_files;
+create policy "Users can add files to their own projects"
+  on public.project_files for insert
+  with check (
+    exists (
+      select 1 from public.projects p
+      where p.id = project_files.project_id and p.user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "Users can delete files in their own projects" on public.project_files;
+create policy "Users can delete files in their own projects"
+  on public.project_files for delete
+  using (
+    exists (
+      select 1 from public.projects p
+      where p.id = project_files.project_id and p.user_id = auth.uid()
+    )
+  );
+
+-- ─────────────────────────────────────────────
+-- Advanced Personalization (Phase 11): two free-text, global preferences —
+-- "what should the assistant know about you" and "how should it respond" —
+-- given to the AI as extra context on every message, in every mode and
+-- every conversation (including ones inside a project). Distinct from
+-- Memory (a list of discrete facts) and a project's own instructions
+-- (scoped to just that project): this is account-wide style/context that
+-- travels everywhere, mirroring ChatGPT's "Custom Instructions". Lives
+-- directly on `profiles` (one pair of values per user, not a list), guarded
+-- by the same RLS the table already has from Phase 1.
+-- ─────────────────────────────────────────────
+alter table public.profiles add column if not exists custom_instructions_about text not null default '' check (char_length(custom_instructions_about) <= 1500);
+alter table public.profiles add column if not exists custom_instructions_style text not null default '' check (char_length(custom_instructions_style) <= 1500);

@@ -1,6 +1,8 @@
 import { ProfileSection } from "@/components/settings/ProfileSection";
 import { PreferencesSection } from "@/components/settings/PreferencesSection";
 import { UsageSection } from "@/components/settings/UsageSection";
+import { MemorySection } from "@/components/settings/MemorySection";
+import { PersonalizationSection } from "@/components/settings/PersonalizationSection";
 
 export default function SettingsPage() {
   return (
@@ -10,6 +12,8 @@ export default function SettingsPage() {
 
       <div className="mt-6 flex flex-col gap-5">
         <ProfileSection />
+        <MemorySection />
+        <PersonalizationSection />
         <UsageSection />
         <PreferencesSection />
       </div>

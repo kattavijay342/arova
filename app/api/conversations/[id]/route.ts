@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { fail, ok } from "@/lib/server/apiResponse";
+import { fail, failInternal, ok } from "@/lib/server/apiResponse";
 import { getSessionUser } from "@/lib/server/requireUser";
 import { checkRateLimit } from "@/lib/server/rateLimit";
 import { isValidUuid } from "@/lib/server/validation";
@@ -24,7 +24,7 @@ export async function GET(request: Request, { params }: { params: { id: string }
     .eq("user_id", user.id)
     .maybeSingle();
 
-  if (convError) return fail(500, "INTERNAL_ERROR", convError.message);
+  if (convError) return failInternal("conversations", convError);
   if (!conversation) return fail(404, "NOT_FOUND", "Conversation not found");
 
   const { data: messages, error: msgError } = await supabase
@@ -33,7 +33,7 @@ export async function GET(request: Request, { params }: { params: { id: string }
     .eq("conversation_id", params.id)
     .order("created_at", { ascending: true });
 
-  if (msgError) return fail(500, "INTERNAL_ERROR", msgError.message);
+  if (msgError) return failInternal("conversations", msgError);
   return ok({ ...conversation, messages });
 }
 
@@ -59,7 +59,7 @@ export async function PATCH(request: Request, { params }: { params: { id: string
     .select()
     .maybeSingle();
 
-  if (error) return fail(500, "INTERNAL_ERROR", error.message);
+  if (error) return failInternal("conversations", error);
   if (!data) return fail(404, "NOT_FOUND", "Conversation not found");
   return ok(data);
 }
@@ -81,7 +81,7 @@ export async function DELETE(request: Request, { params }: { params: { id: strin
     .select()
     .maybeSingle();
 
-  if (error) return fail(500, "INTERNAL_ERROR", error.message);
+  if (error) return failInternal("conversations", error);
   if (!data) return fail(404, "NOT_FOUND", "Conversation not found");
   return ok({ deleted: true });
 }

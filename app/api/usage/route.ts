@@ -1,4 +1,4 @@
-import { fail, ok } from "@/lib/server/apiResponse";
+import { fail, failInternal, ok } from "@/lib/server/apiResponse";
 import { getSessionUser } from "@/lib/server/requireUser";
 import { checkRateLimit } from "@/lib/server/rateLimit";
 import type { UsageStats } from "@/lib/types";
@@ -17,7 +17,7 @@ export async function GET() {
     .eq("user_id", user.id)
     .maybeSingle();
 
-  if (error) return fail(500, "INTERNAL_ERROR", error.message);
+  if (error) return failInternal("usage", error);
 
   const stats: UsageStats = {
     conversationCount: data?.conversation_count ?? 0,

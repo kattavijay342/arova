@@ -14,9 +14,11 @@ interface MenuProps {
   trigger: ReactNode;
   items: MenuItem[];
   align?: "left" | "right";
+  /** Accessible name for the icon-only trigger button — required since `trigger` is typically a bare icon with no visible text. */
+  ariaLabel?: string;
 }
 
-export function Menu({ trigger, items, align = "right" }: MenuProps) {
+export function Menu({ trigger, items, align = "right", ariaLabel }: MenuProps) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -46,6 +48,7 @@ export function Menu({ trigger, items, align = "right" }: MenuProps) {
         }}
         aria-haspopup="menu"
         aria-expanded={open}
+        aria-label={ariaLabel}
         className="flex items-center justify-center rounded-md p-1 text-faint hover:bg-border-soft hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
       >
         {trigger}

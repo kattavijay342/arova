@@ -1,10 +1,11 @@
 import { z } from "zod";
-import { fail, ok } from "@/lib/server/apiResponse";
+import { fail, failInternal, ok } from "@/lib/server/apiResponse";
 import { getSessionUser } from "@/lib/server/requireUser";
 import { checkRateLimit } from "@/lib/server/rateLimit";
 
 const createConversationSchema = z.object({
   mode: z.enum(["student", "career", "general"]),
+  projectId: z.string().uuid().optional(),
 });
 
 export async function GET() {
@@ -22,7 +23,7 @@ export async function GET() {
     .order("updated_at", { ascending: false })
     .order("created_at", { ascending: true, referencedTable: "messages" });
 
-  if (error) return fail(500, "INTERNAL_ERROR", error.message);
+  if (error) return failInternal("conversations", error);
   return ok(data);
 }
 
@@ -39,12 +40,32 @@ export async function POST(request: Request) {
     return fail(400, "BAD_REQUEST", "Validation failed", parsed.error.issues);
   }
 
+  // Verify the project is actually the caller's own before linking a new
+  // conversation to it — RLS on `conversations` only checks the
+  // conversation row's own `user_id`, not that a supplied `project_id`
+  // points to a project owned by the same user.
+  if (parsed.data.projectId) {
+    const { data: project, error: projectError } = await supabase
+      .from("projects")
+      .select("id")
+      .eq("id", parsed.data.projectId)
+      .eq("user_id", user.id)
+      .maybeSingle();
+    if (projectError) return failInternal("conversations", projectError);
+    if (!project) return fail(404, "NOT_FOUND", "Project not found");
+  }
+
   const { data, error } = await supabase
     .from("conversations")
-    .insert({ user_id: user.id, mode: parsed.data.mode, title: "New conversation" })
+    .insert({
+      user_id: user.id,
+      mode: parsed.data.mode,
+      title: "New conversation",
+      project_id: parsed.data.projectId ?? null,
+    })
     .select()
     .single();
 
-  if (error) return fail(500, "INTERNAL_ERROR", error.message);
+  if (error) return failInternal("conversations", error);
   return ok(data, 201);
 }
